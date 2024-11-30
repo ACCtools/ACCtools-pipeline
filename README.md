@@ -8,8 +8,8 @@ Complete pipeline for analyzing a de novo cancer genome with ACCtools.
 - pyfaidx
 - alignasm
 
-Use ananconda to install package minimap2, pyfaidx.  
-See [README.md](https://github.com/ACCtools/alignasm) to install alignasm.
+Use anaconda to install package `minimap2`, `pyfaidx`.  
+See [README.md](https://github.com/ACCtools/alignasm) to install `alignasm`.
 
 ## Pipeline
 ```bash
