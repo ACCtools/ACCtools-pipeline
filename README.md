@@ -10,6 +10,7 @@ mamba create -n skype -c conda-forge -c bioconda \
 gxx cmake=3 zip psutil aria2 pyfaidx hifiasm minimap2 sambamba \
 numpy scipy matplotlib tqdm pycirclize pandas networkx graph-tool seaborn h5py
 
+mamba activate skype
 pip install juliacall
 ```
 
