@@ -16,7 +16,8 @@ pip install juliacall
 ## Example
 ```bash
 git clone https://github.com/ACCtools/ACCtools-pipeline
+cd ACCtools-pipeline
 
 mamba activate skype
-python SKYPE.py run_hifi <Working directory> <hifi.fastq(.gz)>
+python SKYPE.py run_hifi <Working directory> <hifi.fastq(.gz) ...>
 ```
