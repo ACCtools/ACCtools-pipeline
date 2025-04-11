@@ -71,7 +71,7 @@ def hifi_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder):
     for gfa_suffix in ['p_ctg.gfa', 'r_utg.gfa']:
         gfa_file = f"{hifiasm_folder}/{CELL_LINE}.{gfa_suffix}"
         kind = gfa_suffix[0]
-        out_fa = os.path.join(PREFIX, f"10_asm/{PREFIX}.{kind}.fa")
+        out_fa = os.path.join(PREFIX, f"10_asm/{CELL_LINE}.{kind}.fa")
         gfa_to_fa(gfa_file, out_fa)
 
         out_fa_list.append(out_fa)
@@ -309,7 +309,10 @@ def main():
         ctg_loc, utg_loc = hifi_preprocess(args.prefix, args.WORK_DIR, args.HIFI_FASTQ, args.thread, args.dependency_loc)
         
         depth_loc = os.path.join(args.WORK_DIR, '01_depth', f'{args.prefix}.win.stat.gz')
-        dep_folder = os.path.join(args.WORK_DIR, '99_dependency')
+        if args.dependency_loc is None:
+            dep_folder = os.path.join(args.WORK_DIR, '99_dependency')
+        else:
+            dep_folder = args.dependency_loc
         analysis(args.prefix, args.WORK_DIR, ctg_loc, utg_loc, depth_loc, args.thread, dep_folder, args.progress)
 
 if __name__ == "__main__":
