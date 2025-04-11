@@ -43,27 +43,28 @@ def hifi_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder):
     sorted_bam_file = os.path.join(depth_folder, f'{CELL_LINE}.sorted.bam')
 
 
-    subprocess.run([
-        "minimap2", "-x", "map-hifi", "-K", "10G", "-t", THREAD,
-        "-a", refseq] + hifi_fastq + ["-o", sam_file
-    ], check=True)
+    if not os.path.isfile(os.path.join(depth_folder, f'{CELL_LINE}.win.stat.gz')):
+        subprocess.run([
+            "minimap2", "-x", "map-hifi", "-K", "10G", "-t", THREAD,
+            "-a", refseq] + hifi_fastq + ["-o", sam_file
+        ], check=True)
 
-    subprocess.run([
-        "sambamba", "view", "-l", "5", "-t", THREAD, "-f", "bam", "-S",
-        sam_file, "-o", bam_file
-    ], check=True)
-    os.remove(sam_file)
+        subprocess.run([
+            "sambamba", "view", "-l", "5", "-t", THREAD, "-f", "bam", "-S",
+            sam_file, "-o", bam_file
+        ], check=True)
+        os.remove(sam_file)
 
-    subprocess.run([
-        "sambamba", "sort", "-t", THREAD, bam_file, sorted_bam_file
-    ], check=True)
-    os.remove(bam_file)
-    
-    subprocess.run([
-        os.path.join(dep_folder, 'PanDepth/bin/pandepth'), "-w", str(depth_window), "-t", THREAD,
-        "-o", os.path.join(depth_folder, CELL_LINE),
-        "-i", sorted_bam_file
-    ], check=True)
+        subprocess.run([
+            "sambamba", "sort", "-t", THREAD, bam_file, sorted_bam_file
+        ], check=True)
+        os.remove(bam_file)
+        
+        subprocess.run([
+            os.path.join(dep_folder, 'PanDepth/bin/pandepth'), "-w", str(depth_window), "-t", THREAD,
+            "-o", os.path.join(depth_folder, CELL_LINE),
+            "-i", sorted_bam_file
+        ], check=True)
 
     # Mapping to assembly
     out_fa_list = []
