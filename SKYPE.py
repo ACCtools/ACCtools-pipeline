@@ -145,40 +145,6 @@ def run_alignasm(PREFIX_PATH, thread, fa_loc, ref_loc, ALIGNASM_LOC, force):
     return tar_paf_tuple
 
 
-def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_folder, is_progress, force, skype_force):
-    os.makedirs(PREFIX, exist_ok=True)
-
-    if dep_folder is None:
-        install_dependency(os.path.join(PREFIX, '99_dependency'), True)
-        dep_folder = os.path.join(PREFIX, '99_dependency')
-    
-    alignasm_ref_loc = os.path.join(dep_folder, 'chm13v2.0_maskedY_noM.fa')
-    alignasm_loc = os.path.join(dep_folder, 'alignasm', 'build', 'alignasm')
-    os.makedirs(os.path.join(PREFIX, '20_alignasm'), exist_ok=True)
-
-    alignasm_folder_ctg = os.path.join(PREFIX, '20_alignasm', f'{CELL_LINE}.ctg')
-    alignasm_folder_utg = os.path.join(PREFIX, '20_alignasm', f'{CELL_LINE}.utg')
-
-    if thread > 1:
-        alignasm_thread = thread // 2
-        alignasm_worker_thread = 2
-    else:
-        alignasm_thread = 1
-        alignasm_worker_thread = 1
-
-    args_ctg = (alignasm_folder_ctg, alignasm_thread, contig_loc, alignasm_ref_loc, alignasm_loc, force)
-    args_utg = (alignasm_folder_utg, alignasm_thread, unitig_loc, alignasm_ref_loc, alignasm_loc, force)
-
-    with ThreadPoolExecutor(max_workers=alignasm_worker_thread) as executor:
-        future_ctg = executor.submit(run_alignasm, *args_ctg)
-        future_utg = executor.submit(run_alignasm, *args_utg)
-
-        ctg_paf, ctg_aln_paf = future_ctg.result()
-        utg_paf, utg_aln_paf = future_utg.result()
-
-    depth_loc = os.path.abspath(depth_loc)
-    run_skype(CELL_LINE, os.path.abspath(os.path.join(PREFIX, "30_skype")), ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force)
-
 def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force):
     skype_folder_loc = os.path.join(dep_folder, "SKYPE")
     
@@ -248,8 +214,41 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
             TEL_BED, CHR_FAI, PREFIX, CELL_LINE
         ], check=True)
 
+def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_folder, is_progress, force, skype_force, run_skype_func):
+    os.makedirs(PREFIX, exist_ok=True)
 
-def main():
+    if dep_folder is None:
+        install_dependency(os.path.join(PREFIX, '99_dependency'), True)
+        dep_folder = os.path.join(PREFIX, '99_dependency')
+    
+    alignasm_ref_loc = os.path.join(dep_folder, 'chm13v2.0_maskedY_noM.fa')
+    alignasm_loc = os.path.join(dep_folder, 'alignasm', 'build', 'alignasm')
+    os.makedirs(os.path.join(PREFIX, '20_alignasm'), exist_ok=True)
+
+    alignasm_folder_ctg = os.path.join(PREFIX, '20_alignasm', f'{CELL_LINE}.ctg')
+    alignasm_folder_utg = os.path.join(PREFIX, '20_alignasm', f'{CELL_LINE}.utg')
+
+    if thread > 1:
+        alignasm_thread = thread // 2
+        alignasm_worker_thread = 2
+    else:
+        alignasm_thread = 1
+        alignasm_worker_thread = 1
+
+    args_ctg = (alignasm_folder_ctg, alignasm_thread, contig_loc, alignasm_ref_loc, alignasm_loc, force)
+    args_utg = (alignasm_folder_utg, alignasm_thread, unitig_loc, alignasm_ref_loc, alignasm_loc, force)
+
+    with ThreadPoolExecutor(max_workers=alignasm_worker_thread) as executor:
+        future_ctg = executor.submit(run_alignasm, *args_ctg)
+        future_utg = executor.submit(run_alignasm, *args_utg)
+
+        ctg_paf, ctg_aln_paf = future_ctg.result()
+        utg_paf, utg_aln_paf = future_utg.result()
+
+    depth_loc = os.path.abspath(depth_loc)
+    run_skype_func(CELL_LINE, os.path.abspath(os.path.join(PREFIX, "30_skype")), ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force)
+
+def get_skype_parser():
     parser = argparse.ArgumentParser(description="SKYPE pipeline")
 
     # Define parser
@@ -318,16 +317,19 @@ def main():
     parser_run.add_argument("--preprocess_force", help="Don't trust previous file for preprocess", action='store_true')
 
     parser_run.add_argument("--skype_force", help="Don't trust previous file for SKYPE pipeline", action='store_true')
-    
 
-    args = parser.parse_args()
+    return parser
+
+def main():
+    
+    args = get_skype_parser().parse_args()
 
     if args.command == "hifi_preprocess":
         hifi_preprocess(args.prefix, args.WORK_DIR, args.HIFI_FASTQ, args.thread, args.dependency_loc, args.preprocess_force)
     elif args.command == "install_dependency":
         install_dependency(args.dependency_loc, args.force)
     elif args.command == "analysis":
-        analysis(args.prefix, args.WORK_DIR, args.CONTIG, args.UNITIG, args.DEPTH_LOC, args.thread, args.dependency_loc, args.progress, args.preprocess_force, args.skype_force)
+        analysis(args.prefix, args.WORK_DIR, args.CONTIG, args.UNITIG, args.DEPTH_LOC, args.thread, args.dependency_loc, args.progress, args.preprocess_force, args.skype_force, run_skype)
     elif args.command == 'run_hifi':
         ctg_loc, utg_loc = hifi_preprocess(args.prefix, args.WORK_DIR, args.HIFI_FASTQ, args.thread, args.dependency_loc, args.preprocess_force)
         
@@ -336,7 +338,7 @@ def main():
             dep_folder = os.path.join(args.WORK_DIR, '99_dependency')
         else:
             dep_folder = args.dependency_loc
-        analysis(args.prefix, args.WORK_DIR, ctg_loc, utg_loc, depth_loc, args.thread, dep_folder, args.progress, args.preprocess_force, args.skype_force)
+        analysis(args.prefix, args.WORK_DIR, ctg_loc, utg_loc, depth_loc, args.thread, dep_folder, args.progress, args.preprocess_force, args.skype_force, run_skype)
 
 if __name__ == "__main__":
     main()
