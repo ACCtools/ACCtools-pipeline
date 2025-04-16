@@ -246,7 +246,7 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
         utg_paf, utg_aln_paf = future_utg.result()
 
     depth_loc = os.path.abspath(depth_loc)
-    run_skype_func(CELL_LINE, os.path.abspath(os.path.join(PREFIX, "30_skype")), ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force)
+    return run_skype_func(CELL_LINE, os.path.abspath(os.path.join(PREFIX, "30_skype")), ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force)
 
 def get_skype_parser():
     parser = argparse.ArgumentParser(description="SKYPE pipeline")
