@@ -24,6 +24,31 @@ def hifi_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force):
 
     THREAD = str(thread)
 
+    # De novo assembly
+    hifiasm_folder = os.path.join(PREFIX, '00_hifiasm')
+    os.makedirs(hifiasm_folder, exist_ok=True)
+
+    gfa_loc_list = [os.path.join(hifiasm_folder, f"{CELL_LINE}.{gfa_suffix}") for gfa_suffix in ['p_ctg.gfa', 'r_utg.gfa']]
+    is_file = all(map(os.path.isfile, gfa_loc_list))
+
+    if not is_file or force:
+        subprocess.run([
+            'hifiasm', '-o', f'{hifiasm_folder}/{CELL_LINE}',
+            '--telo-m', 'CCCTAA', '-t', THREAD] + hifi_fastq + ['--primary'
+        ], check=True)
+
+    out_fa_list = []
+    os.makedirs(os.path.join(PREFIX, "10_asm"), exist_ok=True)
+    for gfa_suffix in ['p_ctg.gfa', 'r_utg.gfa']:
+        gfa_file = os.path.join(hifiasm_folder, f"{CELL_LINE}.{gfa_suffix}")
+
+        kind = gfa_suffix[0]
+        out_fa = os.path.join(PREFIX, "10_asm", f"{CELL_LINE}.{kind}.fa")
+        if not os.path.isfile(out_fa) or force:
+            gfa_to_fa(gfa_file, out_fa)
+
+        out_fa_list.append(out_fa)
+
     # Mapping read to reference
     refseq = os.path.join(dep_folder, 'chm13v2.0.fa')
 
@@ -56,30 +81,62 @@ def hifi_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force):
             "-i", sorted_bam_file
         ], check=True)
 
+    return out_fa_list
+
+def flye_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, flye_type):
+    depth_window = 100 * 1000
+    os.makedirs(PREFIX, exist_ok=True)
+
+    if dep_folder is None:
+        install_dependency(os.path.join(PREFIX, '99_dependency'), True)
+        dep_folder = os.path.join(PREFIX, '99_dependency')
+
+    THREAD = str(thread)
+
     # De novo assembly
-    hifiasm_folder = os.path.join(PREFIX, '00_hifiasm')
+    hifiasm_folder = os.path.join(PREFIX, '00_flye')
     os.makedirs(hifiasm_folder, exist_ok=True)
 
-    gfa_loc_list = [os.path.join(hifiasm_folder, f"{CELL_LINE}.{gfa_suffix}") for gfa_suffix in ['p_ctg.gfa', 'r_utg.gfa']]
-    is_file = all(map(os.path.isfile, gfa_loc_list))
+    out_fa_list = [os.path.join(hifiasm_folder, 'assembly.fasta'), os.path.join(hifiasm_folder, '00-assembly', 'draft_assembly.fasta')]
+    is_file = all(map(os.path.isfile, out_fa_list))
 
     if not is_file or force:
         subprocess.run([
-            'hifiasm', '-o', f'{hifiasm_folder}/{CELL_LINE}',
-            '--telo-m', 'CCCTAA', '-t', THREAD] + hifi_fastq + ['--primary'
+            'flye', '-o', f'{hifiasm_folder}',
+            '-t', THREAD, f'--{flye_type}'] + hifi_fastq + ['--no-alt-contigs'
         ], check=True)
 
-    out_fa_list = []
-    os.makedirs(os.path.join(PREFIX, "10_asm"), exist_ok=True)
-    for gfa_suffix in ['p_ctg.gfa', 'r_utg.gfa']:
-        gfa_file = os.path.join(hifiasm_folder, f"{CELL_LINE}.{gfa_suffix}")
+    # Mapping read to reference
+    refseq = os.path.join(dep_folder, 'chm13v2.0.fa')
+    
+    depth_folder = os.path.join(PREFIX, '01_depth')
+    os.makedirs(depth_folder, exist_ok=True)
+    sam_file = os.path.join(depth_folder, f'{CELL_LINE}.sam')
+    bam_file = os.path.join(depth_folder, f'{CELL_LINE}.bam')
+    sorted_bam_file = os.path.join(depth_folder, f'{CELL_LINE}.sorted.bam')
 
-        kind = gfa_suffix[0]
-        out_fa = os.path.join(PREFIX, "10_asm", f"{CELL_LINE}.{kind}.fa")
-        if not os.path.isfile(out_fa) or force:
-            gfa_to_fa(gfa_file, out_fa)
+    if not os.path.isfile(os.path.join(depth_folder, f'{CELL_LINE}.win.stat.gz')) or force:
+        subprocess.run([
+            "minimap2", "-x", "map-hifi", "-K", "10G", "-t", THREAD,
+            "-a", refseq] + hifi_fastq + ["-o", sam_file
+        ], check=True)
 
-        out_fa_list.append(out_fa)
+        subprocess.run([
+            "sambamba", "view", "-l", "5", "-t", THREAD, "-f", "bam", "-S",
+            sam_file, "-o", bam_file
+        ], check=True)
+        os.remove(sam_file)
+
+        subprocess.run([
+            "sambamba", "sort", "-t", THREAD, bam_file, sorted_bam_file
+        ], check=True)
+        os.remove(bam_file)
+        
+        subprocess.run([
+            os.path.join(dep_folder, 'PanDepth/bin/pandepth'), "-w", str(depth_window), "-t", THREAD,
+            "-o", os.path.join(depth_folder, CELL_LINE),
+            "-i", sorted_bam_file
+        ], check=True)
 
     return out_fa_list
 
@@ -269,6 +326,22 @@ def get_skype_parser():
     parser_hifi_prepro.add_argument("--preprocess_force", help="Don't trust previous file for preprocess", action='store_true')
 
 
+    parser_flye_prepro = subparsers.add_parser("preprocess_flye", help="Flye preprocessing for SKYPE pipeline")
+
+    parser_flye_prepro.add_argument("WORK_DIR", type=str, help="Working directory for pipeline")
+    
+    parser_flye_prepro.add_argument("FLYE_TYPE", type=str, help="Flye assembly read type (ex: pacbio-raw, nano-raw). See flye CLI docs.")
+
+    parser_flye_prepro.add_argument("LONG_READ_FASTQ", type=str, help="Location of long-read fastq file", nargs="+")
+
+    parser_flye_prepro.add_argument("-t", "--thread", type=int, help="Number of thread", default=1)
+
+    parser_flye_prepro.add_argument("-p", "--prefix", type=str, help="Prefix for pipeline", default="SKYPE")
+
+    parser_flye_prepro.add_argument("--dependency_loc", type=str, help="SKYPE dependency folder location. If no value is specified, it will be installed automatically")
+
+    parser_flye_prepro.add_argument("--preprocess_force", help="Don't trust previous file for preprocess", action='store_true')
+
     
     parser_anl = subparsers.add_parser("analysis", help="Analysis cancer cell line karyotype using contig")
 
@@ -318,6 +391,26 @@ def get_skype_parser():
 
     parser_run.add_argument("--skype_force", help="Don't trust previous file for SKYPE pipeline", action='store_true')
 
+    parser_run_flye = subparsers.add_parser("run_flye", help="Pipeline for cancer long-read sequencing data using Flye")
+
+    parser_run_flye.add_argument("WORK_DIR", type=str, help="Working directory for pipeline")
+
+    parser_run_flye.add_argument("FLYE_TYPE", type=str, help="Flye assembly read type (ex: pacbio-raw, nano-raw). See flye CLI docs.")
+
+    parser_run_flye.add_argument("LONG_READ_FASTQ", type=str, help="Location of long-read fastq file(s)", nargs="+") # Changed from HIFI_FASTQ
+
+    parser_run_flye.add_argument("-t", "--thread", type=int, help="Number of thread", default=1)
+
+    parser_run_flye.add_argument("-p", "--prefix", type=str, help="Prefix for pipeline", default="SKYPE")
+
+    parser_run_flye.add_argument("--progress", help="Show progress bar", action='store_true')
+
+    parser_run_flye.add_argument("--dependency_loc", type=str, help="SKYPE dependency folder location. If no value is specified, it will be installed automatically")
+
+    parser_run_flye.add_argument("--preprocess_force", help="Don't trust previous file for preprocess", action='store_true')
+
+    parser_run_flye.add_argument("--skype_force", help="Don't trust previous file for SKYPE pipeline", action='store_true')
+
     return parser
 
 def main():
@@ -339,6 +432,19 @@ def main():
         else:
             dep_folder = args.dependency_loc
         analysis(args.prefix, args.WORK_DIR, ctg_loc, utg_loc, depth_loc, args.thread, dep_folder, args.progress, args.preprocess_force, args.skype_force, run_skype)
+    elif args.command == 'flye_preprocess':
+        flye_preprocess(args.prefix, args.WORK_DIR, args.HIFI_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.FLYE_TYPE)
+    elif args.command == 'run_flye':
+        ctg_loc, utg_loc = flye_preprocess(args.prefix, args.WORK_DIR, args.LONG_READ_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.FLYE_TYPE)
+        depth_loc = os.path.join(args.WORK_DIR, '01_depth', f'{args.prefix}.win.stat.gz')
+
+        if args.dependency_loc is None:
+            dep_folder = os.path.join(args.WORK_DIR, '99_dependency')
+        else:
+            dep_folder = args.dependency_loc
+
+        analysis(args.prefix, args.WORK_DIR, ctg_loc, utg_loc, depth_loc, args.thread, dep_folder, args.progress, args.preprocess_force, args.skype_force, run_skype)
+
 
 if __name__ == "__main__":
     main()
