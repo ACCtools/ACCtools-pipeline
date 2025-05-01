@@ -20,6 +20,16 @@ git clone https://github.com/ACCtools/ACCtools-pipeline
 cd ACCtools-pipeline
 
 mamba activate skype
+
+# Pacbio HiFi
 python SKYPE.py run_hifi <Working directory> <hifi.fastq(.gz) ...>
-python SKYPE.py run_flye <Working directory> nano-raw <nanoR9.fastq(.gz) ...> # run as flye --nano-raw ...
+
+# ONT R10 (HQ)
+python SKYPE.py run_hifi <Working directory> <hifi.fastq(.gz) ...> --hifiasm_args="--ont"
+
+# PacBio CLR
+python SKYPE.py run_flye <Working directory> pacbio-raw <pacbioCLR.fastq(.gz) ...>
+
+# ONT R9
+python SKYPE.py run_flye <Working directory> nano-raw <nanoR9.fastq(.gz) ...>
 ```

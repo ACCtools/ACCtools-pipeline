@@ -14,7 +14,7 @@ def gfa_to_fa(gfa_file, out_fa):
                     parts = gfa_line.strip().split("\t")
                     out_f.write(f">{parts[1]}\n{parts[2]}\n")
 
-def hifi_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force):
+def hifi_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, hifiasm_args):
     depth_window = 100 * 1000
     os.makedirs(PREFIX, exist_ok=True)
 
@@ -32,10 +32,12 @@ def hifi_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force):
     is_file = all(map(os.path.isfile, gfa_loc_list))
 
     if not is_file or force:
-        subprocess.run([
+        hifiasm_cmd = [
             'hifiasm', '-o', f'{hifiasm_folder}/{CELL_LINE}',
-            '--telo-m', 'CCCTAA', '-t', THREAD] + hifi_fastq + ['--primary'
-        ], check=True)
+            '--telo-m', 'CCCTAA', '-t', THREAD] + hifi_fastq + ['--primary']
+        if hifiasm_args:
+            hifiasm_cmd.extend(hifiasm_args.split())
+        subprocess.run(hifiasm_cmd, check=True)
 
     out_fa_list = []
     os.makedirs(os.path.join(PREFIX, "10_asm"), exist_ok=True)
@@ -83,7 +85,7 @@ def hifi_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force):
 
     return out_fa_list
 
-def flye_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, flye_type):
+def flye_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, flye_type, flye_args):
     depth_window = 100 * 1000
     os.makedirs(PREFIX, exist_ok=True)
 
@@ -101,11 +103,13 @@ def flye_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, fl
     is_file = all(map(os.path.isfile, out_fa_list))
 
     if not is_file or force:
-        subprocess.run([
-            'flye', '-o', f'{hifiasm_folder}',
-            '-t', THREAD, f'--{flye_type}'] + hifi_fastq + ['--no-alt-contigs'
-        ], check=True)
-
+        flye_cmd = [
+            'flye', f'--{flye_type}'] + hifi_fastq + ['-o', f'{hifiasm_folder}',
+            '-t', THREAD, '--no-alt-contigs']
+        if flye_args:
+            flye_cmd.extend(flye_args.split())
+        subprocess.run(flye_cmd, check=True)
+    
     # Mapping read to reference
     refseq = os.path.join(dep_folder, 'chm13v2.0.fa')
     
@@ -205,7 +209,7 @@ def run_alignasm(PREFIX_PATH, thread, fa_loc, ref_loc, ALIGNASM_LOC, force):
 def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force):
     skype_folder_loc = os.path.join(dep_folder, "SKYPE")
     
-    TEL_BED = os.path.join(skype_folder_loc, "public_data/chm13v2.0_telomere.bed")
+    TEL_BED = os.path.join(skype_folder_loc,"public_data/chm13v2.0_telomere.bed")
     CHR_FAI = os.path.join(skype_folder_loc,"public_data/chm13v2.0.fa.fai")
     RPT_BED = os.path.join(skype_folder_loc,"public_data/chm13v2.0_repeat.m.bed")
     RCS_BED = os.path.join(skype_folder_loc,"public_data/chm13v2.0_censat_v2.1.m.bed")
@@ -311,6 +315,7 @@ def get_skype_parser():
     # Define parser
     subparsers = parser.add_subparsers(dest="command", required=True)
     
+
     parser_hifi_prepro = subparsers.add_parser("preprocess_hifi", help="Hifi preprocessing for SKYPE pipeline")
 
     parser_hifi_prepro.add_argument("WORK_DIR", type=str, help="Working directory for pipeline")
@@ -324,6 +329,8 @@ def get_skype_parser():
     parser_hifi_prepro.add_argument("--dependency_loc", type=str, help="SKYPE dependency folder location. If no value is specified, it will be installed automatically")
 
     parser_hifi_prepro.add_argument("--preprocess_force", help="Don't trust previous file for preprocess", action='store_true')
+
+    parser_hifi_prepro.add_argument("--hifiasm_args", type=str, help="Custom hifiasm args")
 
 
     parser_flye_prepro = subparsers.add_parser("preprocess_flye", help="Flye preprocessing for SKYPE pipeline")
@@ -342,7 +349,9 @@ def get_skype_parser():
 
     parser_flye_prepro.add_argument("--preprocess_force", help="Don't trust previous file for preprocess", action='store_true')
 
+    parser_flye_prepro.add_argument("--flye_args", type=str, help="Custom flye args")
     
+
     parser_anl = subparsers.add_parser("analysis", help="Analysis cancer cell line karyotype using contig")
 
     parser_anl.add_argument("WORK_DIR", type=str, help="Working directory for pipeline")
@@ -391,6 +400,8 @@ def get_skype_parser():
 
     parser_run.add_argument("--skype_force", help="Don't trust previous file for SKYPE pipeline", action='store_true')
 
+    parser_run.add_argument("--hifiasm_args", type=str, help="Custom hifiasm args")
+
     parser_run_flye = subparsers.add_parser("run_flye", help="Pipeline for cancer long-read sequencing data using Flye")
 
     parser_run_flye.add_argument("WORK_DIR", type=str, help="Working directory for pipeline")
@@ -411,6 +422,8 @@ def get_skype_parser():
 
     parser_run_flye.add_argument("--skype_force", help="Don't trust previous file for SKYPE pipeline", action='store_true')
 
+    parser_run_flye.add_argument("--flye_args", type=str, help="Custom flye args")
+
     return parser
 
 def main():
@@ -418,13 +431,13 @@ def main():
     args = get_skype_parser().parse_args()
 
     if args.command == "hifi_preprocess":
-        hifi_preprocess(args.prefix, args.WORK_DIR, args.HIFI_FASTQ, args.thread, args.dependency_loc, args.preprocess_force)
+        hifi_preprocess(args.prefix, args.WORK_DIR, args.HIFI_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.hifiasm_args)
     elif args.command == "install_dependency":
         install_dependency(args.dependency_loc, args.force)
     elif args.command == "analysis":
         analysis(args.prefix, args.WORK_DIR, args.CONTIG, args.UNITIG, args.DEPTH_LOC, args.thread, args.dependency_loc, args.progress, args.preprocess_force, args.skype_force, run_skype)
     elif args.command == 'run_hifi':
-        ctg_loc, utg_loc = hifi_preprocess(args.prefix, args.WORK_DIR, args.HIFI_FASTQ, args.thread, args.dependency_loc, args.preprocess_force)
+        ctg_loc, utg_loc = hifi_preprocess(args.prefix, args.WORK_DIR, args.HIFI_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.hifiasm_args)
         
         depth_loc = os.path.join(args.WORK_DIR, '01_depth', f'{args.prefix}.win.stat.gz')
         if args.dependency_loc is None:
@@ -433,9 +446,9 @@ def main():
             dep_folder = args.dependency_loc
         analysis(args.prefix, args.WORK_DIR, ctg_loc, utg_loc, depth_loc, args.thread, dep_folder, args.progress, args.preprocess_force, args.skype_force, run_skype)
     elif args.command == 'flye_preprocess':
-        flye_preprocess(args.prefix, args.WORK_DIR, args.HIFI_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.FLYE_TYPE)
+        flye_preprocess(args.prefix, args.WORK_DIR, args.HIFI_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.FLYE_TYPE, args.flye_args)
     elif args.command == 'run_flye':
-        ctg_loc, utg_loc = flye_preprocess(args.prefix, args.WORK_DIR, args.LONG_READ_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.FLYE_TYPE)
+        ctg_loc, utg_loc = flye_preprocess(args.prefix, args.WORK_DIR, args.LONG_READ_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.FLYE_TYPE, args.flye_args)
         depth_loc = os.path.join(args.WORK_DIR, '01_depth', f'{args.prefix}.win.stat.gz')
 
         if args.dependency_loc is None:
