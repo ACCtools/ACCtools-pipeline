@@ -173,6 +173,22 @@ def install_dependency(dep_folder, force):
     
     subprocess.run("git clone https://github.com/ACCtools/SKYPE", cwd=dep_folder, shell=True, check=True)
 
+def update_dependency(dep_folder):
+    shutil.rmtree(os.path.join(dep_folder, 'PanDepth'))
+    subprocess.run("git clone https://github.com/ACCtools/PanDepth && "\
+                   "cd PanDepth && make", cwd=dep_folder, shell=True, check=True)
+    
+    shutil.rmtree(os.path.join(dep_folder, 'alignasm'))
+    subprocess.run("git clone https://github.com/ACCtools/alignasm && "\
+                   "cd alignasm && "\
+                   "git clone https://github.com/Microsoft/vcpkg.git && ./vcpkg/bootstrap-vcpkg.sh && "\
+                   "mkdir build && cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=vcpkg/scripts/buildsystems/vcpkg.cmake && "\
+                   "cmake --build build", cwd=dep_folder, shell=True, check=True)
+    
+    shutil.rmtree(os.path.join(dep_folder, 'SKYPE'))
+    subprocess.run("git clone https://github.com/ACCtools/SKYPE", cwd=dep_folder, shell=True, check=True)
+
+
 def run_alignasm(PREFIX_PATH, thread, fa_loc, ref_loc, ALIGNASM_LOC, force):
     THREAD = str(thread)
 
@@ -381,6 +397,9 @@ def get_skype_parser():
 
     parser_dep.add_argument("--force", help="Reinstall dependency folder", action='store_true')
 
+    parser_up_dep = subparsers.add_parser("update_dependency", help="Hifi preprocessing for SKYPE pipeline")
+
+    parser_up_dep.add_argument("dependency_loc", type=str, help="SKYPE dependency folder location")
     
     parser_run = subparsers.add_parser("run_hifi", help="Pipeline for cancer hifi sequencing data")
 
@@ -434,6 +453,8 @@ def main():
         hifi_preprocess(args.prefix, args.WORK_DIR, args.HIFI_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.hifiasm_args)
     elif args.command == "install_dependency":
         install_dependency(args.dependency_loc, args.force)
+    elif args.command == "update_dependency":
+        update_dependency(args.dependency_loc)
     elif args.command == "analysis":
         analysis(args.prefix, args.WORK_DIR, args.CONTIG, args.UNITIG, args.DEPTH_LOC, args.thread, args.dependency_loc, args.progress, args.preprocess_force, args.skype_force, run_skype)
     elif args.command == 'run_hifi':
