@@ -73,7 +73,7 @@ def hifi_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, hi
         os.remove(sam_file)
 
         subprocess.run([
-            "sambamba", "sort", "-t", THREAD, bam_file, sorted_bam_file
+            "samtools", "sort", '-m', '4G', '-@', THREAD, bam_file, '-o', sorted_bam_file
         ], check=True)
         os.remove(bam_file)
         
