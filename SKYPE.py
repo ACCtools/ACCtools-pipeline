@@ -291,7 +291,7 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
             TEL_BED, CHR_FAI, PREFIX, CELL_LINE
         ], check=True)
 
-def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_folder, is_progress, force, skype_force, run_skype_func):
+def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_folder, is_progress, force, skype_force, run_skype_func, no_utg=False):
     os.makedirs(PREFIX, exist_ok=True)
 
     if dep_folder is None:
@@ -305,25 +305,38 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
     alignasm_folder_ctg = os.path.join(PREFIX, '20_alignasm', f'{CELL_LINE}.ctg')
     alignasm_folder_utg = os.path.join(PREFIX, '20_alignasm', f'{CELL_LINE}.utg')
 
-    if thread > 1:
-        alignasm_thread = thread // 2
-        alignasm_worker_thread = 2
-    else:
-        alignasm_thread = 1
+    if no_utg:
+        alignasm_thread = thread
         alignasm_worker_thread = 1
+    else:
+        if thread > 1:
+            alignasm_thread = thread // 2
+            alignasm_worker_thread = 2
+        else:
+            alignasm_thread = 1
+            alignasm_worker_thread = 1
 
     args_ctg = (alignasm_folder_ctg, alignasm_thread, contig_loc, alignasm_ref_loc, alignasm_loc, force)
     args_utg = (alignasm_folder_utg, alignasm_thread, unitig_loc, alignasm_ref_loc, alignasm_loc, force)
+    
+    if no_utg:
+        with ThreadPoolExecutor(max_workers=alignasm_worker_thread) as executor:
+            future_ctg = executor.submit(run_alignasm, *args_ctg)
+            ctg_paf, ctg_aln_paf = future_ctg.result()
 
-    with ThreadPoolExecutor(max_workers=alignasm_worker_thread) as executor:
-        future_ctg = executor.submit(run_alignasm, *args_ctg)
-        future_utg = executor.submit(run_alignasm, *args_utg)
+        depth_loc = os.path.abspath(depth_loc)
+        return run_skype_func(CELL_LINE, os.path.abspath(os.path.join(PREFIX, "30_skype")), ctg_paf, ctg_aln_paf, ctg_paf, ctg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force)
 
-        ctg_paf, ctg_aln_paf = future_ctg.result()
-        utg_paf, utg_aln_paf = future_utg.result()
+    else:
+        with ThreadPoolExecutor(max_workers=alignasm_worker_thread) as executor:
+            future_ctg = executor.submit(run_alignasm, *args_ctg)
+            future_utg = executor.submit(run_alignasm, *args_utg)
 
-    depth_loc = os.path.abspath(depth_loc)
-    return run_skype_func(CELL_LINE, os.path.abspath(os.path.join(PREFIX, "30_skype")), ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force)
+            ctg_paf, ctg_aln_paf = future_ctg.result()
+            utg_paf, utg_aln_paf = future_utg.result()
+
+        depth_loc = os.path.abspath(depth_loc)
+        return run_skype_func(CELL_LINE, os.path.abspath(os.path.join(PREFIX, "30_skype")), ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force)
 
 def get_skype_parser():
     parser = argparse.ArgumentParser(description="SKYPE pipeline")
@@ -397,9 +410,11 @@ def get_skype_parser():
 
     parser_dep.add_argument("--force", help="Reinstall dependency folder", action='store_true')
 
+    
     parser_up_dep = subparsers.add_parser("update_dependency", help="Hifi preprocessing for SKYPE pipeline")
 
     parser_up_dep.add_argument("dependency_loc", type=str, help="SKYPE dependency folder location")
+    
     
     parser_run = subparsers.add_parser("run_hifi", help="Pipeline for cancer hifi sequencing data")
 
@@ -421,6 +436,7 @@ def get_skype_parser():
 
     parser_run.add_argument("--hifiasm_args", type=str, help="Custom hifiasm args")
 
+    
     parser_run_flye = subparsers.add_parser("run_flye", help="Pipeline for cancer long-read sequencing data using Flye")
 
     parser_run_flye.add_argument("WORK_DIR", type=str, help="Working directory for pipeline")
@@ -477,7 +493,7 @@ def main():
         else:
             dep_folder = args.dependency_loc
 
-        analysis(args.prefix, args.WORK_DIR, ctg_loc, utg_loc, depth_loc, args.thread, dep_folder, args.progress, args.preprocess_force, args.skype_force, run_skype)
+        analysis(args.prefix, args.WORK_DIR, ctg_loc, utg_loc, depth_loc, args.thread, dep_folder, args.progress, args.preprocess_force, args.skype_force, run_skype, no_utg=True)
 
 
 if __name__ == "__main__":
