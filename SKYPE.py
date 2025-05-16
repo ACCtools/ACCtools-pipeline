@@ -85,7 +85,13 @@ def hifi_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, hi
 
     return out_fa_list
 
-def flye_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, flye_type, flye_args):
+def flye_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, flye_type, flye_args, minimap2_preset):
+    minimap2_preset_flye = get_minimap2_preset_from_flye(flye_type)
+    if minimap2_preset_flye is None and minimap2_preset is None:
+        raise AssertionError("Please use --minimap2_preset to get preset for long-read mapping at minimap2")
+    
+    minimap2_preset = minimap2_preset_flye if minimap2_preset is None else minimap2_preset
+
     depth_window = 100 * 1000
     os.makedirs(PREFIX, exist_ok=True)
 
@@ -121,7 +127,7 @@ def flye_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, fl
 
     if not os.path.isfile(os.path.join(depth_folder, f'{CELL_LINE}.win.stat.gz')) or force:
         subprocess.run([
-            "minimap2", "-x", "map-hifi", "-K", "10G", "-t", THREAD,
+            "minimap2", "-x", minimap2_preset, "-K", "10G", "-t", THREAD,
             "-a", refseq] + hifi_fastq + ["-o", sam_file
         ], check=True)
 
@@ -132,7 +138,7 @@ def flye_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, fl
         os.remove(sam_file)
 
         subprocess.run([
-            "sambamba", "sort", "-t", THREAD, bam_file, sorted_bam_file
+            "samtools", "sort", '-m', '4G', '-@', THREAD, bam_file, '-o', sorted_bam_file
         ], check=True)
         os.remove(bam_file)
         
@@ -379,6 +385,8 @@ def get_skype_parser():
     parser_flye_prepro.add_argument("--preprocess_force", help="Don't trust previous file for preprocess", action='store_true')
 
     parser_flye_prepro.add_argument("--flye_args", type=str, help="Custom flye args")
+
+    parser_flye_prepro.add_argument("--minimap2_preset", type=str, help="Minimap2 preset for long-read mapping")
     
 
     parser_anl = subparsers.add_parser("analysis", help="Analysis cancer cell line karyotype using contig")
@@ -459,7 +467,21 @@ def get_skype_parser():
 
     parser_run_flye.add_argument("--flye_args", type=str, help="Custom flye args")
 
+    parser_run_flye.add_argument("--minimap2_preset", type=str, help="Minimap2 preset for long-read mapping")
+
     return parser
+
+def get_minimap2_preset_from_flye(FLYE_TYPE : str):
+    if FLYE_TYPE == 'pacbio-hifi':
+        return 'map-hifi'
+    elif FLYE_TYPE.startswith('pacbio'):
+        return 'map-pb'
+    elif FLYE_TYPE == 'nano-raw':
+        return 'map-ont'
+    elif FLYE_TYPE.startswith('nano'):
+        return 'lr:hq'
+    else:
+        return None
 
 def main():
     
@@ -483,9 +505,9 @@ def main():
             dep_folder = args.dependency_loc
         analysis(args.prefix, args.WORK_DIR, ctg_loc, utg_loc, depth_loc, args.thread, dep_folder, args.progress, args.preprocess_force, args.skype_force, run_skype)
     elif args.command == 'flye_preprocess':
-        flye_preprocess(args.prefix, args.WORK_DIR, args.HIFI_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.FLYE_TYPE, args.flye_args)
+        flye_preprocess(args.prefix, args.WORK_DIR, args.HIFI_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.FLYE_TYPE, args.flye_args, args.minimap2_preset)
     elif args.command == 'run_flye':
-        ctg_loc, utg_loc = flye_preprocess(args.prefix, args.WORK_DIR, args.LONG_READ_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.FLYE_TYPE, args.flye_args)
+        ctg_loc, utg_loc = flye_preprocess(args.prefix, args.WORK_DIR, args.LONG_READ_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.FLYE_TYPE, args.flye_args, args.minimap2_preset)
         depth_loc = os.path.join(args.WORK_DIR, '01_depth', f'{args.prefix}.win.stat.gz')
 
         if args.dependency_loc is None:
