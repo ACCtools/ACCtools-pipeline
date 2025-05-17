@@ -76,6 +76,10 @@ def hifi_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, hi
             "samtools", "sort", '-m', '4G', '-@', THREAD, bam_file, '-o', sorted_bam_file
         ], check=True)
         os.remove(bam_file)
+
+        subprocess.run([
+            "samtools", "index", '-@', THREAD, bam_file,
+        ], check=True)
         
         subprocess.run([
             os.path.join(dep_folder, 'PanDepth/bin/pandepth'), "-w", str(depth_window), "-t", THREAD,
@@ -141,6 +145,10 @@ def flye_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, fl
             "samtools", "sort", '-m', '4G', '-@', THREAD, bam_file, '-o', sorted_bam_file
         ], check=True)
         os.remove(bam_file)
+
+        subprocess.run([
+            "samtools", "index", '-@', THREAD, bam_file,
+        ], check=True)
         
         subprocess.run([
             os.path.join(dep_folder, 'PanDepth/bin/pandepth'), "-w", str(depth_window), "-t", THREAD,
@@ -515,7 +523,7 @@ def main():
         else:
             dep_folder = args.dependency_loc
 
-        analysis(args.prefix, args.WORK_DIR, ctg_loc, utg_loc, depth_loc, args.thread, dep_folder, args.progress, args.preprocess_force, args.skype_force, run_skype, no_utg=True)
+        analysis(args.prefix, args.WORK_DIR, ctg_loc, utg_loc, depth_loc, args.thread, dep_folder, args.progress, args.preprocess_force, args.skype_force, run_skype)
 
 
 if __name__ == "__main__":
