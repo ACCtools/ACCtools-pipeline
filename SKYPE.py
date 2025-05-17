@@ -255,14 +255,8 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
 
     if not os.path.isfile(os.path.join(PREFIX, 'virtual_sky.png')) or skype_force:
         subprocess.run([
-            "python", os.path.join(skype_folder_loc, "00_Contig_Preprocessing.py"), 
-            PAF_LOC, TEL_BED, CHR_FAI, RPT_BED, RCS_BED, MAIN_STAT_LOC, PREFIX,
-            "--alt", PAF_UTG_LOC
-        ], check=True)
-
-        subprocess.run([
             "python", os.path.join(skype_folder_loc, "02_Build_Breakend_Graph_Limited.py"),
-            f"{PAF_LOC}.ppc.paf", CHR_FAI, RCS_BED, PREFIX,
+            PAF_LOC, CHR_FAI, TEL_BED, RPT_BED, RCS_BED, MAIN_STAT_LOC, PREFIX, "--alt", PAF_UTG_LOC,
             "--orignal_paf_loc", ctg_paf, utg_paf,
             "-t", THREAD
         ] + PROGRESS, check=True)
