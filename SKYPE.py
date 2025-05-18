@@ -36,7 +36,7 @@ def hifi_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, hi
             'hifiasm', '-o', f'{hifiasm_folder}/{CELL_LINE}',
             '--telo-m', 'CCCTAA', '-t', THREAD] + hifi_fastq + ['--primary']
         if hifiasm_args:
-            hifiasm_cmd.extend(hifiasm_args.split())
+            hifiasm_cmd.extend(hifiasm_args)
         subprocess.run(hifiasm_cmd, check=True)
 
     out_fa_list = []
@@ -117,7 +117,7 @@ def flye_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, fl
             'flye', f'--{flye_type}'] + hifi_fastq + ['-o', f'{hifiasm_folder}',
             '-t', THREAD]
         if flye_args:
-            flye_cmd.extend(flye_args.split())
+            flye_cmd.extend(flye_args)
         subprocess.run(flye_cmd, check=True)
     
     # Mapping read to reference
@@ -369,7 +369,7 @@ def get_skype_parser():
 
     parser_hifi_prepro.add_argument("--preprocess_force", help="Don't trust previous file for preprocess", action='store_true')
 
-    parser_hifi_prepro.add_argument("--hifiasm_args", type=str, help="Custom hifiasm args")
+    parser_hifi_prepro.add_argument("--hifiasm_args", type=str, help="Custom hifiasm args", nargs=argparse.REMAINDER)
 
 
     parser_flye_prepro = subparsers.add_parser("preprocess_flye", help="Flye preprocessing for SKYPE pipeline")
@@ -388,7 +388,7 @@ def get_skype_parser():
 
     parser_flye_prepro.add_argument("--preprocess_force", help="Don't trust previous file for preprocess", action='store_true')
 
-    parser_flye_prepro.add_argument("--flye_args", type=str, help="Custom flye args")
+    parser_flye_prepro.add_argument("--flye_args", type=str, help="Custom flye args", nargs=argparse.REMAINDER)
 
     parser_flye_prepro.add_argument("--minimap2_preset", type=str, help="Minimap2 preset for long-read mapping")
     
@@ -446,7 +446,7 @@ def get_skype_parser():
 
     parser_run.add_argument("--skype_force", help="Don't trust previous file for SKYPE pipeline", action='store_true')
 
-    parser_run.add_argument("--hifiasm_args", type=str, help="Custom hifiasm args")
+    parser_run.add_argument("--hifiasm_args", type=str, help="Custom hifiasm args", nargs=argparse.REMAINDER,)
 
     
     parser_run_flye = subparsers.add_parser("run_flye", help="Pipeline for cancer long-read sequencing data using Flye")
@@ -469,7 +469,7 @@ def get_skype_parser():
 
     parser_run_flye.add_argument("--skype_force", help="Don't trust previous file for SKYPE pipeline", action='store_true')
 
-    parser_run_flye.add_argument("--flye_args", type=str, help="Custom flye args")
+    parser_run_flye.add_argument("--flye_args", type=str, help="Custom flye args", nargs=argparse.REMAINDER,)
 
     parser_run_flye.add_argument("--minimap2_preset", type=str, help="Minimap2 preset for long-read mapping")
 
