@@ -115,7 +115,7 @@ def flye_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, fl
     if not is_file or force:
         flye_cmd = [
             'flye', f'--{flye_type}'] + hifi_fastq + ['-o', f'{hifiasm_folder}',
-            '-t', THREAD, '--no-alt-contigs']
+            '-t', THREAD, '--no-alt-contigs', '--resume']
         if flye_args:
             flye_cmd.extend(flye_args.split())
         subprocess.run(flye_cmd, check=True)
@@ -267,7 +267,9 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
             "--alt", PAF_UTG_LOC
         ], check=True)
 
-        thread_lim = int(psutil.virtual_memory().total / (1024**3) / 8)
+        free_mem_gb = psutil.virtual_memory().available / (1024 ** 3)
+        thread_lim = int(free_mem_gb / 10)
+        
         subprocess.run([
             "python", os.path.join(skype_folder_loc, "21_run_depth.py"),
             PAF_LOC, f"{PAF_LOC}.ppc.paf", PREFIX, "--alt", PAF_UTG_LOC,
