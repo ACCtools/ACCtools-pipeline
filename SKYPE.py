@@ -115,7 +115,7 @@ def flye_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, fl
     if not is_file or force:
         flye_cmd = [
             'flye', f'--{flye_type}'] + hifi_fastq + ['-o', f'{hifiasm_folder}',
-            '-t', THREAD, '--no-alt-contigs', '--resume']
+            '-t', THREAD]
         if flye_args:
             flye_cmd.extend(flye_args.split())
         subprocess.run(flye_cmd, check=True)
