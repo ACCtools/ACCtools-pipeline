@@ -272,7 +272,7 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
         
         subprocess.run([
             "python", os.path.join(skype_folder_loc, "21_run_depth.py"),
-            PAF_LOC, f"{PAF_LOC}.ppc.paf", PREFIX, "--alt", PAF_UTG_LOC,
+            f"{PAF_LOC}.ppc.paf", PREFIX,
             "--pandepth_loc", os.path.join(dep_folder, 'PanDepth', 'bin', 'pandepth'),
             "-t", str(max(min(thread_lim, thread), 1))
         ] + PROGRESS, check=True)
