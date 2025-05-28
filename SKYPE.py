@@ -234,7 +234,7 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
     MAIN_STAT_LOC = depth_loc
     PAF_LOC = ctg_aln_paf
     PAF_UTG_LOC = utg_aln_paf
-    READ_BAM_LOC = os.path.join(PREFIX, '01_depth', f'{CELL_LINE}.bam')
+    READ_BAM_LOC = os.path.join(os.path.dirname(PREFIX), '01_depth', f'{CELL_LINE}.bam')
     
     THREAD = str(thread)
     PROGRESS = ["--progress"] if is_progress else []
