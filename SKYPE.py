@@ -172,18 +172,18 @@ def install_dependency(dep_folder, force):
     subprocess.run("git clone https://github.com/ACCtools/SKYPE", cwd=dep_folder, shell=True, check=True)
 
 def update_dependency(dep_folder):
-    shutil.rmtree(os.path.join(dep_folder, 'PanDepth'))
+    shutil.rmtree(os.path.join(dep_folder, 'PanDepth'), ignore_errors=True)
     subprocess.run("git clone https://github.com/ACCtools/PanDepth && "\
                    "cd PanDepth && make", cwd=dep_folder, shell=True, check=True)
     
-    shutil.rmtree(os.path.join(dep_folder, 'alignasm'))
+    shutil.rmtree(os.path.join(dep_folder, 'alignasm'), ignore_errors=True)
     subprocess.run("git clone https://github.com/ACCtools/alignasm && "\
                    "cd alignasm && "\
                    "git clone https://github.com/Microsoft/vcpkg.git && ./vcpkg/bootstrap-vcpkg.sh && "\
                    "mkdir build && cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=vcpkg/scripts/buildsystems/vcpkg.cmake && "\
                    "cmake --build build", cwd=dep_folder, shell=True, check=True)
     
-    shutil.rmtree(os.path.join(dep_folder, 'SKYPE'))
+    shutil.rmtree(os.path.join(dep_folder, 'SKYPE'), ignore_errors=True)
     subprocess.run("git clone https://github.com/ACCtools/SKYPE", cwd=dep_folder, shell=True, check=True)
 
 
