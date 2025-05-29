@@ -252,8 +252,9 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
             "-t", THREAD
         ] + PROGRESS, check=True)
 
+        thread_lim = min(16, thread)
         subprocess.run([
-            "python", "-X", f"juliacall-threads={THREAD}", "-X", "juliacall-handle-signals=yes",
+            "python", "-X", f"juliacall-threads={thread_lim}", "-X", "juliacall-handle-signals=yes",
             os.path.join(skype_folder_loc, "03_Anal_bam.py"),
             PREFIX, READ_BAM_LOC, CHR_FAI
         ] + PROGRESS, check=True)
