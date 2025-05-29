@@ -172,6 +172,8 @@ def install_dependency(dep_folder, force):
     subprocess.run("git clone https://github.com/ACCtools/SKYPE", cwd=dep_folder, shell=True, check=True)
 
 def update_dependency(dep_folder):
+    os.makedirs(dep_folder)
+
     shutil.rmtree(os.path.join(dep_folder, 'PanDepth'), ignore_errors=True)
     subprocess.run("git clone https://github.com/ACCtools/PanDepth && "\
                    "cd PanDepth && make", cwd=dep_folder, shell=True, check=True)
