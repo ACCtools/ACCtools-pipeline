@@ -245,18 +245,13 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
     IS_NCLOSE_WEIGHT = ["--not_using_nclose_weight"] if not is_nclose_weight else []
 
     if not os.path.isfile(os.path.join(PREFIX, 'virtual_sky.png')) or skype_force:
-        subprocess.run([
-            "python", os.path.join(skype_folder_loc, "02_Build_Breakend_Graph_Limited.py"),
-            PAF_LOC, CHR_FAI, TEL_BED, RPT_BED, RCS_BED, MAIN_STAT_LOC, PREFIX, "--alt", PAF_UTG_LOC,
-            "--orignal_paf_loc", ctg_paf, utg_paf,
-            "-t", THREAD
-        ] + PROGRESS, check=True)
-
         thread_lim = min(16, thread)
         subprocess.run([
-            "python", "-X", f"juliacall-threads={thread_lim}", "-X", "juliacall-handle-signals=yes",
-            os.path.join(skype_folder_loc, "03_Anal_bam.py"),
-            PREFIX, READ_BAM_LOC, RCS_BED, CHR_FAI, MAIN_STAT_LOC
+            "python", "-X", f"juliacall-threads={thread_lim}", "-X", "juliacall-handle-signals=yes", 
+            os.path.join(skype_folder_loc, "02_Build_Breakend_Graph_Limited.py"),
+            PAF_LOC, CHR_FAI, TEL_BED, RPT_BED, RCS_BED, MAIN_STAT_LOC, PREFIX, READ_BAM_LOC,
+            "--alt", PAF_UTG_LOC, "--orignal_paf_loc", ctg_paf, utg_paf,
+            "-t", THREAD
         ] + PROGRESS, check=True)
 
         subprocess.run([
