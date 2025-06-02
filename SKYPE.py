@@ -6,6 +6,8 @@ import subprocess
 
 from concurrent.futures import ThreadPoolExecutor
 
+NCLOSE_WEIGHT_DEFAULT = 0.1
+
 def gfa_to_fa(gfa_file, out_fa):
     with open(out_fa, "w") as out_f:
         with open(gfa_file) as gfa:
@@ -402,7 +404,7 @@ def get_skype_parser():
 
     parser_anl.add_argument("--not_use_nclose_weight", help="Toggle to exclude breakend depth while calculating result", action='store_false')
 
-    parser_anl.add_argument("--nclose_weight", help="Constant to control weight of breakend depth in final result (Default : 0.5)", type=float, default=0.5)
+    parser_anl.add_argument("--nclose_weight", help="Constant to control weight of breakend depth in final result (Default : 0.5)", type=float, default=NCLOSE_WEIGHT_DEFAULT)
     
     parser_anl.add_argument("--progress", help="Show progress bar", action='store_true')
 
@@ -437,7 +439,7 @@ def get_skype_parser():
 
     parser_run.add_argument("--not_use_nclose_weight", help="Toggle to exclude breakend depth while calculating result", action='store_false')
 
-    parser_run.add_argument("--nclose_weight", help="Constant to control weight of breakend depth in final result (Default : 0.5)", type=float, default=0.5)
+    parser_run.add_argument("--nclose_weight", help="Constant to control weight of breakend depth in final result (Default : 0.5)", type=float, default=NCLOSE_WEIGHT_DEFAULT)
 
     parser_run.add_argument("--progress", help="Show progress bar", action='store_true')
 
@@ -464,7 +466,7 @@ def get_skype_parser():
 
     parser_run_flye.add_argument("--not_use_nclose_weight", help="Toggle to exclude breakend depth while calculating result", action='store_false')
 
-    parser_run_flye.add_argument("--nclose_weight", help="Constant to control weight of breakend depth in final result (Default : 0.5)", type=float, default=0.5)
+    parser_run_flye.add_argument("--nclose_weight", help="Constant to control weight of breakend depth in final result (Default : 0.5)", type=float, default=NCLOSE_WEIGHT_DEFAULT)
 
     parser_run_flye.add_argument("--progress", help="Show progress bar", action='store_true')
 
