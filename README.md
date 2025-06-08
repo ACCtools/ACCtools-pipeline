@@ -8,7 +8,8 @@ Please make anaconda environment to use SKYPE pipeline
 ```bash
 mamba create -n skype -c conda-forge -c bioconda \
 gxx cmake=3 zip psutil aria2 pyfaidx hifiasm flye minimap2 sambamba samtools \
-numpy scipy matplotlib tqdm pycirclize pandas networkx graph-tool seaborn h5py
+numpy scipy matplotlib tqdm pycirclize pandas networkx graph-tool seaborn h5py \
+scikit-learn=1.6 skglm threadpoolctl
 
 mamba activate skype
 pip install juliacall
