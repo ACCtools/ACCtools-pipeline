@@ -231,10 +231,12 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
     RPT_BED = os.path.join(skype_folder_loc,"public_data/chm13v2.0_repeat.m.bed")
     RCS_BED = os.path.join(skype_folder_loc,"public_data/chm13v2.0_censat_v2.1.m.bed")
     CYT_BED = os.path.join(skype_folder_loc,"public_data/chm13v2.0_cytobands_allchrs.bed")
+    REF_STAT_LOC = os.path.join(skype_folder_loc,"public_data/CHM13.win.stat.gz")
     
 
     # python to bash variable
     MAIN_STAT_LOC = depth_loc
+    MAIN_STAT_NORM_LOC = depth_loc.replace('.win.stat.gz', '_normalized.win.stat.gz')
     PAF_LOC = ctg_aln_paf
     PAF_UTG_LOC = utg_aln_paf
     READ_BAM_LOC = os.path.join(os.path.dirname(PREFIX), '01_depth', f'{CELL_LINE}.bam')
@@ -243,9 +245,15 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
     PROGRESS = ["--progress"] if is_progress else []
 
     if not os.path.isfile(os.path.join(PREFIX, 'virtual_sky.png')) or skype_force:
+
+        subprocess.run([
+            "python", os.path.join(skype_folder_loc, "00_depth_norm.py"),
+            MAIN_STAT_LOC, REF_STAT_LOC, RCS_BED 
+        ], check=True)
+
         subprocess.run([
             "python", os.path.join(skype_folder_loc, "02_Build_Breakend_Graph_Limited.py"),
-            PAF_LOC, CHR_FAI, TEL_BED, RPT_BED, RCS_BED, MAIN_STAT_LOC, PREFIX, READ_BAM_LOC,
+            PAF_LOC, CHR_FAI, TEL_BED, RPT_BED, RCS_BED, MAIN_STAT_NORM_LOC, PREFIX, READ_BAM_LOC,
             "--alt", PAF_UTG_LOC, "--orignal_paf_loc", ctg_paf, utg_paf,
             "-t", THREAD
         ] + PROGRESS, check=True)
@@ -268,7 +276,7 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
 
         subprocess.run([
             "python", os.path.join(skype_folder_loc, "22_save_matrix.py"),
-            RCS_BED, f"{PAF_LOC}.ppc.paf", MAIN_STAT_LOC,
+            RCS_BED, f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
             TEL_BED, CHR_FAI, CYT_BED, PREFIX, "-t", THREAD
         ] + PROGRESS, check=True)
 
@@ -279,13 +287,13 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
 
         subprocess.run([
             "python", os.path.join(skype_folder_loc, "30_depth_analysis.py"),
-            RCS_BED, f"{PAF_LOC}.ppc.paf", MAIN_STAT_LOC,
+            RCS_BED, f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
             TEL_BED, CHR_FAI, CYT_BED, PREFIX, "-t", THREAD
         ] + PROGRESS, check=True)
 
         subprocess.run([
             "python", os.path.join(skype_folder_loc, "31_virtual_sky.py"),
-            f"{PAF_LOC}.ppc.paf", MAIN_STAT_LOC,
+            f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
             TEL_BED, CHR_FAI, PREFIX, CELL_LINE
         ], check=True)
 
