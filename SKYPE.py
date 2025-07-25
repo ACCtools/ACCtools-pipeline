@@ -280,22 +280,38 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
             TEL_BED, CHR_FAI, CYT_BED, PREFIX, "-t", THREAD
         ] + PROGRESS, check=True)
 
+        core_num = psutil.cpu_count(logical=False)
+        if core_num is None:
+            JULIA_THREAD = THREAD
+        else:
+            JULIA_THREAD = min(int(THREAD), core_num)
+        
         subprocess.run([
-            "python", "23_run_nnls.py",
-            os.path.abspath(PREFIX), "-t", THREAD
+            "python", "-X", f"juliacall-threads={JULIA_THREAD}", "-X", "juliacall-handle-signals=yes",
+            "23_run_nnls.py", f"{PAF_LOC}.ppc.paf",
+            os.path.abspath(PREFIX), MAIN_STAT_NORM_LOC, "-t", THREAD
         ], check=True, cwd=skype_folder_loc)
 
         subprocess.run([
-            "python", os.path.join(skype_folder_loc, "30_depth_analysis.py"),
+            "python", os.path.join(skype_folder_loc, "30_virtual_sky.py"),
+            f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
+            TEL_BED, CHR_FAI, PREFIX, CELL_LINE
+        ], check=True)
+
+        subprocess.run([
+            "python", os.path.join(skype_folder_loc, "31_depth_analysis.py"),
             RCS_BED, f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
             TEL_BED, CHR_FAI, CYT_BED, PREFIX, "-t", THREAD
         ] + PROGRESS, check=True)
 
         subprocess.run([
-            "python", os.path.join(skype_folder_loc, "31_virtual_sky.py"),
-            f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
-            TEL_BED, CHR_FAI, PREFIX, CELL_LINE
-        ], check=True)
+            "python", os.path.join(skype_folder_loc, "32_depth_analysis_final.py"),
+            RCS_BED, f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
+            TEL_BED, CHR_FAI, CYT_BED, PREFIX, "-t", THREAD
+        ] + PROGRESS, check=True)
+
+
+        
 
 def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_folder, is_progress, force, skype_force, run_skype_func, no_utg=False):
     os.makedirs(PREFIX, exist_ok=True)
