@@ -293,6 +293,12 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
         ], check=True, cwd=skype_folder_loc)
 
         subprocess.run([
+            "python", "-X", f"juliacall-threads={JULIA_THREAD}", "-X", "juliacall-handle-signals=yes",
+            "24_cluster_weight.py", f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
+            TEL_BED, CHR_FAI, os.path.abspath(PREFIX), "-t", THREAD
+        ], check=True, cwd=skype_folder_loc)
+
+        subprocess.run([
             "python", os.path.join(skype_folder_loc, "30_virtual_sky.py"),
             f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
             TEL_BED, CHR_FAI, PREFIX, CELL_LINE
@@ -303,14 +309,6 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
             RCS_BED, f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
             TEL_BED, CHR_FAI, CYT_BED, PREFIX, "-t", THREAD
         ] + PROGRESS, check=True)
-
-        subprocess.run([
-            "python", os.path.join(skype_folder_loc, "32_depth_analysis_final.py"),
-            RCS_BED, f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
-            TEL_BED, CHR_FAI, CYT_BED, PREFIX, "-t", THREAD
-        ] + PROGRESS, check=True)
-
-
         
 
 def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_folder, is_progress, force, skype_force, run_skype_func, no_utg=False):
