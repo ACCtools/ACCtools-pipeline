@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 
 def gfa_to_fa(gfa_file, out_fa):
+    # Convert GFA format to FASTA format, extracting sequence lines.
     with open(out_fa, "w") as out_f:
         with open(gfa_file) as gfa:
             for gfa_line in gfa:
@@ -16,6 +17,7 @@ def gfa_to_fa(gfa_file, out_fa):
                     out_f.write(f">{parts[1]}\n{parts[2]}\n")
 
 def hifi_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, hifiasm_args):
+    # Preprocessing pipeline for HiFi data using hifiasm.
     depth_window = 100 * 1000
     os.makedirs(PREFIX, exist_ok=True)
 
@@ -59,7 +61,6 @@ def hifi_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, hi
     os.makedirs(depth_folder, exist_ok=True)
     sam_file = os.path.join(depth_folder, f'{CELL_LINE}.sam')
     bam_file = os.path.join(depth_folder, f'{CELL_LINE}.bam')
-    sorted_bam_file = os.path.join(depth_folder, f'{CELL_LINE}.sorted.bam')
 
     if not os.path.isfile(os.path.join(depth_folder, f'{CELL_LINE}.win.stat.gz')) or force:
         if not os.path.isfile(bam_file) or force:
@@ -83,6 +84,7 @@ def hifi_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, hi
     return out_fa_list
 
 def flye_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, flye_type, flye_args, minimap2_preset):
+    # Preprocessing pipeline for long-read data using Flye.
     minimap2_preset_flye = get_minimap2_preset_from_flye(flye_type)
     if minimap2_preset_flye is None and minimap2_preset is None:
         raise AssertionError("Please use --minimap2_preset to get preset for long-read mapping at minimap2")
@@ -99,15 +101,15 @@ def flye_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, fl
     THREAD = str(thread)
 
     # De novo assembly
-    hifiasm_folder = os.path.join(PREFIX, '00_flye')
-    os.makedirs(hifiasm_folder, exist_ok=True)
+    flye_folder = os.path.join(PREFIX, '00_flye')
+    os.makedirs(flye_folder, exist_ok=True)
 
-    out_fa_list = [os.path.join(hifiasm_folder, 'assembly.fasta'), os.path.join(hifiasm_folder, '00-assembly', 'draft_assembly.fasta')]
+    out_fa_list = [os.path.join(flye_folder, 'assembly.fasta'), os.path.join(flye_folder, 'assembly_graph.gfa')]
     is_file = all(map(os.path.isfile, out_fa_list))
 
     if not is_file or force:
         flye_cmd = [
-            'flye', f'--{flye_type}'] + hifi_fastq + ['-o', f'{hifiasm_folder}',
+            'flye', f'--{flye_type}'] + hifi_fastq + ['-o', f'{flye_folder}',
             '-t', THREAD]
         if flye_args:
             flye_cmd.extend(flye_args)
@@ -120,10 +122,9 @@ def flye_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, fl
     os.makedirs(depth_folder, exist_ok=True)
     sam_file = os.path.join(depth_folder, f'{CELL_LINE}.sam')
     bam_file = os.path.join(depth_folder, f'{CELL_LINE}.bam')
-    sorted_bam_file = os.path.join(depth_folder, f'{CELL_LINE}.sorted.bam')
         
     if not os.path.isfile(os.path.join(depth_folder, f'{CELL_LINE}.win.stat.gz')) or force:
-        if not os.path.isfile(sorted_bam_file) or force:
+        if not os.path.isfile(bam_file) or force:
             subprocess.run([
                 "minimap2", "-x", minimap2_preset, "-K", "10G", "-t", THREAD,
                 "-a", refseq] + hifi_fastq + ["-o", sam_file
@@ -138,12 +139,13 @@ def flye_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, fl
         subprocess.run([
             os.path.join(dep_folder, 'PanDepth/bin/pandepth'), "-w", str(depth_window), "-t", THREAD,
             "-o", os.path.join(depth_folder, CELL_LINE),
-            "-i", sorted_bam_file
+            "-i", bam_file
         ], check=True)
 
     return out_fa_list
 
 def install_dependency(dep_folder, force):
+    # Install all necessary dependencies for the SKYPE pipeline.
     if force:
         if os.path.isdir(dep_folder):
             shutil.rmtree(dep_folder)
@@ -173,6 +175,7 @@ def install_dependency(dep_folder, force):
     subprocess.run("git clone https://github.com/ACCtools/SKYPE", cwd=dep_folder, shell=True, check=True)
 
 def update_dependency(dep_folder):
+    # Update existing dependencies to the latest versions from their repositories.
     os.makedirs(dep_folder, exist_ok=True)
 
     shutil.rmtree(os.path.join(dep_folder, 'PanDepth'), ignore_errors=True)
@@ -191,6 +194,7 @@ def update_dependency(dep_folder):
 
 
 def run_alignasm(PREFIX_PATH, thread, fa_loc, ref_loc, ALIGNASM_LOC, force):
+    # Run the alignasm tool for sequence alignment.
     THREAD = str(thread)
 
     tar_paf_tuple = (f"{PREFIX_PATH}.paf", f"{PREFIX_PATH}.aln.paf")
@@ -223,7 +227,8 @@ def run_alignasm(PREFIX_PATH, thread, fa_loc, ref_loc, ALIGNASM_LOC, force):
     return tar_paf_tuple
 
 
-def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force):
+def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force, graph_depth):
+    # Execute the core SKYPE analysis scripts.
     skype_folder_loc = os.path.join(dep_folder, "SKYPE")
     
     TEL_BED = os.path.join(skype_folder_loc,"public_data/chm13v2.0_telomere.bed")
@@ -255,7 +260,7 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
             "python", os.path.join(skype_folder_loc, "02_Build_Breakend_Graph_Limited.py"),
             PAF_LOC, CHR_FAI, TEL_BED, RPT_BED, RCS_BED, MAIN_STAT_NORM_LOC, PREFIX, READ_BAM_LOC,
             "--alt", PAF_UTG_LOC, "--orignal_paf_loc", ctg_paf, utg_paf,
-            "-t", THREAD
+            "-t", THREAD, "-d", str(graph_depth)
         ] + PROGRESS, check=True)
 
         subprocess.run([
@@ -311,7 +316,8 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
         ] + PROGRESS, check=True)
         
 
-def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_folder, is_progress, force, skype_force, run_skype_func, no_utg=False):
+def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_folder, is_progress, force, skype_force, run_skype_func, graph_depth, no_utg=False):
+    # Main analysis function that orchestrates alignment and SKYPE execution.
     os.makedirs(PREFIX, exist_ok=True)
 
     if dep_folder is None:
@@ -345,7 +351,7 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
             ctg_paf, ctg_aln_paf = future_ctg.result()
 
         depth_loc = os.path.abspath(depth_loc)
-        return run_skype_func(CELL_LINE, os.path.abspath(os.path.join(PREFIX, "30_skype")), ctg_paf, ctg_aln_paf, ctg_paf, ctg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force)
+        return run_skype_func(CELL_LINE, os.path.abspath(os.path.join(PREFIX, "30_skype")), ctg_paf, ctg_aln_paf, ctg_paf, ctg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force, graph_depth)
 
     else:
         with ThreadPoolExecutor(max_workers=alignasm_worker_thread) as executor:
@@ -356,9 +362,10 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
             utg_paf, utg_aln_paf = future_utg.result()
 
         depth_loc = os.path.abspath(depth_loc)
-        return run_skype_func(CELL_LINE, os.path.abspath(os.path.join(PREFIX, "30_skype")), ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force)
+        return run_skype_func(CELL_LINE, os.path.abspath(os.path.join(PREFIX, "30_skype")), ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force, graph_depth)
 
 def get_skype_parser():
+    # Set up the command-line argument parser.
     parser = argparse.ArgumentParser(description="SKYPE pipeline")
 
     # Define parser
@@ -425,7 +432,9 @@ def get_skype_parser():
 
     parser_anl.add_argument("--skype_force", help="Don't trust previous file for SKYPE pipeline", action='store_true')
 
-    
+    parser_anl.add_argument("-d", "--graph_depth", help="Depth of breakend graph", type=int, default=4)
+
+
     parser_dep = subparsers.add_parser("install_dependency", help="Hifi preprocessing for SKYPE pipeline")
 
     parser_dep.add_argument("dependency_loc", type=str, help="SKYPE dependency folder location")
@@ -456,6 +465,8 @@ def get_skype_parser():
 
     parser_run.add_argument("--skype_force", help="Don't trust previous file for SKYPE pipeline", action='store_true')
 
+    parser_run.add_argument("-d", "--graph_depth", help="Depth of breakend graph", type=int, default=4)
+
     parser_run.add_argument("--hifiasm_args", type=str, help="Custom hifiasm args", nargs=argparse.REMAINDER,)
 
     
@@ -465,7 +476,7 @@ def get_skype_parser():
 
     parser_run_flye.add_argument("FLYE_TYPE", type=str, help="Flye assembly read type (ex: pacbio-raw, nano-raw). See flye CLI docs.")
 
-    parser_run_flye.add_argument("LONG_READ_FASTQ", type=str, help="Location of long-read fastq file(s)", nargs="+") # Changed from HIFI_FASTQ
+    parser_run_flye.add_argument("LONG_READ_FASTQ", type=str, help="Location of long-read fastq file(s)", nargs="+")
 
     parser_run_flye.add_argument("-t", "--thread", type=int, help="Number of thread", default=1)
 
@@ -479,6 +490,8 @@ def get_skype_parser():
 
     parser_run_flye.add_argument("--skype_force", help="Don't trust previous file for SKYPE pipeline", action='store_true')
 
+    parser_run_flye.add_argument("-d", "--graph_depth", help="Depth of breakend graph", type=int, default=4)
+
     parser_run_flye.add_argument("--flye_args", type=str, help="Custom flye args", nargs=argparse.REMAINDER,)
 
     parser_run_flye.add_argument("--minimap2_preset", type=str, help="Minimap2 preset for long-read mapping")
@@ -486,6 +499,7 @@ def get_skype_parser():
     return parser
 
 def get_minimap2_preset_from_flye(FLYE_TYPE : str):
+    # Determine the appropriate minimap2 preset based on the Flye read type.
     if FLYE_TYPE == 'pacbio-hifi':
         return 'map-hifi'
     elif FLYE_TYPE.startswith('pacbio'):
@@ -498,17 +512,17 @@ def get_minimap2_preset_from_flye(FLYE_TYPE : str):
         return None
 
 def main():
-    
+    # Main function to parse arguments and execute the corresponding command.
     args = get_skype_parser().parse_args()
 
-    if args.command == "hifi_preprocess":
+    if args.command == "preprocess_hifi":
         hifi_preprocess(args.prefix, args.WORK_DIR, args.HIFI_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.hifiasm_args)
     elif args.command == "install_dependency":
         install_dependency(args.dependency_loc, args.force)
     elif args.command == "update_dependency":
         update_dependency(args.dependency_loc)
     elif args.command == "analysis":
-        analysis(args.prefix, args.WORK_DIR, args.CONTIG, args.UNITIG, args.DEPTH_LOC, args.thread, args.dependency_loc, args.progress, args.preprocess_force, args.skype_force, run_skype)
+        analysis(args.prefix, args.WORK_DIR, args.CONTIG, args.UNITIG, args.DEPTH_LOC, args.thread, args.dependency_loc, args.progress, args.preprocess_force, args.skype_force, run_skype, args.graph_depth)
     elif args.command == 'run_hifi':
         ctg_loc, utg_loc = hifi_preprocess(args.prefix, args.WORK_DIR, args.HIFI_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.hifiasm_args)
         
@@ -517,9 +531,9 @@ def main():
             dep_folder = os.path.join(args.WORK_DIR, '99_dependency')
         else:
             dep_folder = args.dependency_loc
-        analysis(args.prefix, args.WORK_DIR, ctg_loc, utg_loc, depth_loc, args.thread, dep_folder, args.progress, args.preprocess_force, args.skype_force, run_skype)
-    elif args.command == 'flye_preprocess':
-        flye_preprocess(args.prefix, args.WORK_DIR, args.HIFI_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.FLYE_TYPE, args.flye_args, args.minimap2_preset)
+        analysis(args.prefix, args.WORK_DIR, ctg_loc, utg_loc, depth_loc, args.thread, dep_folder, args.progress, args.preprocess_force, args.skype_force, run_skype, args.graph_depth)
+    elif args.command == 'preprocess_flye':
+        flye_preprocess(args.prefix, args.WORK_DIR, args.LONG_READ_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.FLYE_TYPE, args.flye_args, args.minimap2_preset)
     elif args.command == 'run_flye':
         ctg_loc, utg_loc = flye_preprocess(args.prefix, args.WORK_DIR, args.LONG_READ_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.FLYE_TYPE, args.flye_args, args.minimap2_preset)
         depth_loc = os.path.join(args.WORK_DIR, '01_depth', f'{args.prefix}.win.stat.gz')
@@ -529,7 +543,7 @@ def main():
         else:
             dep_folder = args.dependency_loc
 
-        analysis(args.prefix, args.WORK_DIR, ctg_loc, utg_loc, depth_loc, args.thread, dep_folder, args.progress, args.preprocess_force, args.skype_force, run_skype)
+        analysis(args.prefix, args.WORK_DIR, ctg_loc, utg_loc, depth_loc, args.thread, dep_folder, args.progress, args.preprocess_force, args.skype_force, run_skype, args.graph_depth, no_utg=True)
 
 
 if __name__ == "__main__":
