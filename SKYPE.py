@@ -250,7 +250,6 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
     PROGRESS = ["--progress"] if is_progress else []
 
     if not os.path.isfile(os.path.join(PREFIX, 'virtual_sky.png')) or skype_force:
-
         subprocess.run([
             "python", os.path.join(skype_folder_loc, "00_depth_norm.py"),
             MAIN_STAT_LOC, REF_STAT_LOC, RCS_BED 
@@ -263,11 +262,11 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
             "-t", THREAD, "-d", str(graph_depth)
         ] + PROGRESS, check=True)
 
-        # subprocess.run([
-        #     "python", os.path.join(skype_folder_loc, "11_Ref_Outlier_Contig_Modify.py"),
-        #     PAF_LOC, CHR_FAI, f"{PAF_LOC}.ppc.paf", PREFIX,
-        #     "--alt", PAF_UTG_LOC
-        # ], check=True)
+        subprocess.run([
+            "python", os.path.join(skype_folder_loc, "11_Ref_Outlier_Contig_Modify.py"),
+            PAF_LOC, CHR_FAI, f"{PAF_LOC}.ppc.paf", PREFIX,
+            "--alt", PAF_UTG_LOC
+        ], check=True)
 
         free_mem_gb = psutil.virtual_memory().available / (1024 ** 3)
         thread_lim = int(free_mem_gb / 10)
