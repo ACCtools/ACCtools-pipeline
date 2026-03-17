@@ -291,9 +291,8 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
             JULIA_THREAD = min(int(THREAD), core_num)
         
         subprocess.run([
-            "python", "-X", f"juliacall-threads={JULIA_THREAD}", "-X", "juliacall-handle-signals=yes",
-            "23_run_nnls.py", f"{PAF_LOC}.ppc.paf",
-            os.path.abspath(PREFIX), MAIN_STAT_NORM_LOC, "-t", THREAD
+            "python", "23_run_nnls.py", f"{PAF_LOC}.ppc.paf",
+            os.path.abspath(PREFIX), MAIN_STAT_NORM_LOC, RCS_BED, "-t", THREAD
         ], check=True, cwd=skype_folder_loc)
 
         subprocess.run([
