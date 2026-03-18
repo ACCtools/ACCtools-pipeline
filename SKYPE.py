@@ -281,22 +281,22 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
         subprocess.run([
             "python", os.path.join(skype_folder_loc, "22_save_matrix.py"),
             RCS_BED, f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
-            TEL_BED, CHR_FAI, CYT_BED, PREFIX, "-t", THREAD
+            TEL_BED, CHR_FAI, CYT_BED, PREFIX, "-t", THREAD, "--not_use_nclose_weight"
         ] + PROGRESS, check=True)
 
-        core_num = psutil.cpu_count(logical=False)
-        if core_num is None:
-            JULIA_THREAD = THREAD
-        else:
-            JULIA_THREAD = min(int(THREAD), core_num)
-        
         subprocess.run([
             "python", "23_run_nnls.py", f"{PAF_LOC}.ppc.paf",
             os.path.abspath(PREFIX), MAIN_STAT_NORM_LOC, RCS_BED, "-t", THREAD
         ], check=True, cwd=skype_folder_loc)
 
+        # core_num = psutil.cpu_count(logical=False)
+        # if core_num is None:
+        #     JULIA_THREAD = THREAD
+        # else:
+        #     JULIA_THREAD = min(int(THREAD), core_num)
+
         subprocess.run([
-            "python", "-X", f"juliacall-threads={JULIA_THREAD}", "-X", "juliacall-handle-signals=yes",
+            "python", "-X", f"juliacall-threads={THREAD}", "-X", "juliacall-handle-signals=yes",
             "24_cluster_weight.py", f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
             TEL_BED, CHR_FAI, os.path.abspath(PREFIX), "-t", THREAD
         ], check=True, cwd=skype_folder_loc)
