@@ -253,55 +253,55 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
     PROGRESS = ["--progress"] if is_progress else []
 
     if not os.path.isfile(os.path.join(PREFIX, 'virtual_sky.png')) or skype_force:
-        # subprocess.run([
-        #     "python", os.path.join(skype_folder_loc, "00_depth_norm.py"),
-        #     MAIN_STAT_LOC, REF_STAT_LOC, RCS_BED 
-        # ], check=True)
+        subprocess.run([
+            "python", os.path.join(skype_folder_loc, "00_depth_norm.py"),
+            MAIN_STAT_LOC, REF_STAT_LOC, RCS_BED 
+        ], check=True)
 
-        # subprocess.run([
-        #     "python", os.path.join(skype_folder_loc, "02_Build_Breakend_Graph_Limited.py"),
-        #     PAF_LOC, CHR_FAI, TEL_BED, RPT_BED, RCS_BED, MAIN_STAT_NORM_LOC, PREFIX, READ_BAM_LOC,
-        #     "--alt", PAF_UTG_LOC, "--orignal_paf_loc", ctg_paf, utg_paf,
-        #     "-t", THREAD, "-d", str(graph_depth), "--skip_bam_analysis"
-        # ] + PROGRESS, check=True)
+        subprocess.run([
+            "python", os.path.join(skype_folder_loc, "02_Build_Breakend_Graph_Limited.py"),
+            PAF_LOC, CHR_FAI, TEL_BED, RPT_BED, RCS_BED, MAIN_STAT_NORM_LOC, PREFIX, READ_BAM_LOC,
+            "--alt", PAF_UTG_LOC, "--orignal_paf_loc", ctg_paf, utg_paf,
+            "-t", THREAD, "-d", str(graph_depth), "--skip_bam_analysis"
+        ] + PROGRESS, check=True)
 
-        # subprocess.run([
-        #     "python", os.path.join(skype_folder_loc, "11_Ref_Outlier_Contig_Modify.py"),
-        #     PAF_LOC, CHR_FAI, f"{PAF_LOC}.ppc.paf", PREFIX,
-        #     "--alt", PAF_UTG_LOC
-        # ], check=True)
+        subprocess.run([
+            "python", os.path.join(skype_folder_loc, "11_Ref_Outlier_Contig_Modify.py"),
+            PAF_LOC, CHR_FAI, f"{PAF_LOC}.ppc.paf", PREFIX,
+            "--alt", PAF_UTG_LOC
+        ], check=True)
 
-        # free_mem_gb = psutil.virtual_memory().available / (1024 ** 3)
-        # thread_lim = int(free_mem_gb / 10)
+        free_mem_gb = psutil.virtual_memory().available / (1024 ** 3)
+        thread_lim = int(free_mem_gb / 10)
         
-        # subprocess.run([
-        #     "python", os.path.join(skype_folder_loc, "21_run_depth.py"),
-        #     f"{PAF_LOC}.ppc.paf", PREFIX,
-        #     "--pandepth_loc", os.path.join(dep_folder, 'PanDepth', 'bin', 'pandepth'),
-        #     "-t", str(max(min(thread_lim, thread), 1))
-        # ] + PROGRESS, check=True)
+        subprocess.run([
+            "python", os.path.join(skype_folder_loc, "21_run_depth.py"),
+            f"{PAF_LOC}.ppc.paf", PREFIX,
+            "--pandepth_loc", os.path.join(dep_folder, 'PanDepth', 'bin', 'pandepth'),
+            "-t", str(max(min(thread_lim, thread), 1))
+        ] + PROGRESS, check=True)
 
-        # subprocess.run([
-        #     "python", os.path.join(skype_folder_loc, "22_save_matrix.py"),
-        #     RCS_BED, f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
-        #     TEL_BED, CHR_FAI, CYT_BED, PREFIX, "-t", THREAD, "--not_use_nclose_weight"
-        # ] + PROGRESS, check=True)
+        subprocess.run([
+            "python", os.path.join(skype_folder_loc, "22_save_matrix.py"),
+            RCS_BED, f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
+            TEL_BED, CHR_FAI, CYT_BED, PREFIX, "-t", THREAD, "--not_use_nclose_weight"
+        ] + PROGRESS, check=True)
 
-        # subprocess.run([
-        #     "python", "23_run_nnls.py", f"{PAF_LOC}.ppc.paf",
-        #     os.path.abspath(PREFIX), MAIN_STAT_NORM_LOC, RCS_BED, "-t", THREAD
-        # ], check=True, cwd=skype_folder_loc)
+        subprocess.run([
+            "python", "23_run_nnls.py", f"{PAF_LOC}.ppc.paf",
+            os.path.abspath(PREFIX), MAIN_STAT_NORM_LOC, RCS_BED, "-t", THREAD
+        ], check=True, cwd=skype_folder_loc)
 
-        # core_num = psutil.cpu_count(logical=False)
-        # if core_num is None:
-        #     JULIA_THREAD = THREAD
-        # else:
-        #     JULIA_THREAD = min(int(THREAD), core_num)
+        core_num = psutil.cpu_count(logical=False)
+        if core_num is None:
+            JULIA_THREAD = THREAD
+        else:
+            JULIA_THREAD = min(int(THREAD), core_num)
 
         subprocess.run([
             "python", "-X", f"juliacall-threads={THREAD}", "-X", "juliacall-handle-signals=yes",
             "24_cluster_weight.py", f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
-            TEL_BED, CHR_FAI, os.path.abspath(PREFIX), "-t", JULIA_THREAD
+            TEL_BED, CHR_FAI, os.path.abspath(PREFIX), "-t", str(JULIA_THREAD)
         ], check=True, cwd=skype_folder_loc)
 
         subprocess.run([
