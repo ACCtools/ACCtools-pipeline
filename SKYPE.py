@@ -6,6 +6,8 @@ import subprocess
 
 from concurrent.futures import ThreadPoolExecutor
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 def gfa_to_fa(gfa_file, out_fa):
     # Convert GFA format to FASTA format, extracting sequence lines.
@@ -208,7 +210,7 @@ def run_alignasm(PREFIX_PATH, thread, fa_loc, ref_loc, ALIGNASM_LOC, force):
         ], check=True)
 
         subprocess.run([
-            "python3", "paf_gap_seq.py",
+            "python3", os.path.join(SCRIPT_DIR, "paf_gap_seq.py"),
             fa_loc, f"{PREFIX_PATH}.paf", f"{PREFIX_PATH}.pat.fa"
         ], check=True)
 
@@ -229,6 +231,7 @@ def run_alignasm(PREFIX_PATH, thread, fa_loc, ref_loc, ALIGNASM_LOC, force):
 
 def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force, graph_depth):
     # Execute the core SKYPE analysis scripts.
+    dep_folder = os.path.abspath(dep_folder)
     skype_folder_loc = os.path.join(dep_folder, "SKYPE")
     
     TEL_BED = os.path.join(skype_folder_loc,"public_data/chm13v2.0_telomere.bed")
@@ -244,50 +247,50 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
     MAIN_STAT_NORM_LOC = depth_loc.replace('.win.stat.gz', '_normalized.win.stat.gz')
     PAF_LOC = ctg_aln_paf
     PAF_UTG_LOC = utg_aln_paf
-    READ_BAM_LOC = os.path.join(os.path.dirname(PREFIX), '01_depth', f'{CELL_LINE}.bam')
+    READ_BAM_LOC = os.path.join(os.path.dirname(depth_loc), f'{CELL_LINE}.bam')
     
     THREAD = str(thread)
     PROGRESS = ["--progress"] if is_progress else []
 
     if not os.path.isfile(os.path.join(PREFIX, 'virtual_sky.png')) or skype_force:
-        subprocess.run([
-            "python", os.path.join(skype_folder_loc, "00_depth_norm.py"),
-            MAIN_STAT_LOC, REF_STAT_LOC, RCS_BED 
-        ], check=True)
+        # subprocess.run([
+        #     "python", os.path.join(skype_folder_loc, "00_depth_norm.py"),
+        #     MAIN_STAT_LOC, REF_STAT_LOC, RCS_BED 
+        # ], check=True)
 
-        subprocess.run([
-            "python", os.path.join(skype_folder_loc, "02_Build_Breakend_Graph_Limited.py"),
-            PAF_LOC, CHR_FAI, TEL_BED, RPT_BED, RCS_BED, MAIN_STAT_NORM_LOC, PREFIX, READ_BAM_LOC,
-            "--alt", PAF_UTG_LOC, "--orignal_paf_loc", ctg_paf, utg_paf,
-            "-t", THREAD, "-d", str(graph_depth)
-        ] + PROGRESS, check=True)
+        # subprocess.run([
+        #     "python", os.path.join(skype_folder_loc, "02_Build_Breakend_Graph_Limited.py"),
+        #     PAF_LOC, CHR_FAI, TEL_BED, RPT_BED, RCS_BED, MAIN_STAT_NORM_LOC, PREFIX, READ_BAM_LOC,
+        #     "--alt", PAF_UTG_LOC, "--orignal_paf_loc", ctg_paf, utg_paf,
+        #     "-t", THREAD, "-d", str(graph_depth), "--skip_bam_analysis"
+        # ] + PROGRESS, check=True)
 
-        subprocess.run([
-            "python", os.path.join(skype_folder_loc, "11_Ref_Outlier_Contig_Modify.py"),
-            PAF_LOC, CHR_FAI, f"{PAF_LOC}.ppc.paf", PREFIX,
-            "--alt", PAF_UTG_LOC
-        ], check=True)
+        # subprocess.run([
+        #     "python", os.path.join(skype_folder_loc, "11_Ref_Outlier_Contig_Modify.py"),
+        #     PAF_LOC, CHR_FAI, f"{PAF_LOC}.ppc.paf", PREFIX,
+        #     "--alt", PAF_UTG_LOC
+        # ], check=True)
 
-        free_mem_gb = psutil.virtual_memory().available / (1024 ** 3)
-        thread_lim = int(free_mem_gb / 10)
+        # free_mem_gb = psutil.virtual_memory().available / (1024 ** 3)
+        # thread_lim = int(free_mem_gb / 10)
         
-        subprocess.run([
-            "python", os.path.join(skype_folder_loc, "21_run_depth.py"),
-            f"{PAF_LOC}.ppc.paf", PREFIX,
-            "--pandepth_loc", os.path.join(dep_folder, 'PanDepth', 'bin', 'pandepth'),
-            "-t", str(max(min(thread_lim, thread), 1))
-        ] + PROGRESS, check=True)
+        # subprocess.run([
+        #     "python", os.path.join(skype_folder_loc, "21_run_depth.py"),
+        #     f"{PAF_LOC}.ppc.paf", PREFIX,
+        #     "--pandepth_loc", os.path.join(dep_folder, 'PanDepth', 'bin', 'pandepth'),
+        #     "-t", str(max(min(thread_lim, thread), 1))
+        # ] + PROGRESS, check=True)
 
-        subprocess.run([
-            "python", os.path.join(skype_folder_loc, "22_save_matrix.py"),
-            RCS_BED, f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
-            TEL_BED, CHR_FAI, CYT_BED, PREFIX, "-t", THREAD, "--not_use_nclose_weight"
-        ] + PROGRESS, check=True)
+        # subprocess.run([
+        #     "python", os.path.join(skype_folder_loc, "22_save_matrix.py"),
+        #     RCS_BED, f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
+        #     TEL_BED, CHR_FAI, CYT_BED, PREFIX, "-t", THREAD, "--not_use_nclose_weight"
+        # ] + PROGRESS, check=True)
 
-        subprocess.run([
-            "python", "23_run_nnls.py", f"{PAF_LOC}.ppc.paf",
-            os.path.abspath(PREFIX), MAIN_STAT_NORM_LOC, RCS_BED, "-t", THREAD
-        ], check=True, cwd=skype_folder_loc)
+        # subprocess.run([
+        #     "python", "23_run_nnls.py", f"{PAF_LOC}.ppc.paf",
+        #     os.path.abspath(PREFIX), MAIN_STAT_NORM_LOC, RCS_BED, "-t", THREAD
+        # ], check=True, cwd=skype_folder_loc)
 
         # core_num = psutil.cpu_count(logical=False)
         # if core_num is None:
@@ -298,7 +301,7 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
         subprocess.run([
             "python", "-X", f"juliacall-threads={THREAD}", "-X", "juliacall-handle-signals=yes",
             "24_cluster_weight.py", f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
-            TEL_BED, CHR_FAI, os.path.abspath(PREFIX), "-t", THREAD
+            TEL_BED, CHR_FAI, os.path.abspath(PREFIX), "-t", JULIA_THREAD
         ], check=True, cwd=skype_folder_loc)
 
         subprocess.run([
@@ -314,13 +317,16 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
         ] + PROGRESS, check=True)
         
 
-def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_folder, is_progress, force, skype_force, run_skype_func, graph_depth, no_utg=False):
+def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_folder, is_progress, force, skype_force, run_skype_func, graph_depth, no_utg=False, skype_dir=None):
     # Main analysis function that orchestrates alignment and SKYPE execution.
     os.makedirs(PREFIX, exist_ok=True)
 
     if dep_folder is None:
         install_dependency(os.path.join(PREFIX, '99_dependency'), True)
         dep_folder = os.path.join(PREFIX, '99_dependency')
+
+    if skype_dir is None:
+        skype_dir = os.path.join(PREFIX, "30_skype")
     
     alignasm_ref_loc = os.path.join(dep_folder, 'chm13v2.0_maskedY_noM.fa')
     alignasm_loc = os.path.join(dep_folder, 'alignasm', 'build', 'alignasm')
@@ -349,7 +355,7 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
             ctg_paf, ctg_aln_paf = future_ctg.result()
 
         depth_loc = os.path.abspath(depth_loc)
-        return run_skype_func(CELL_LINE, os.path.abspath(os.path.join(PREFIX, "30_skype")), ctg_paf, ctg_aln_paf, ctg_paf, ctg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force, graph_depth)
+        return run_skype_func(CELL_LINE, os.path.abspath(skype_dir), ctg_paf, ctg_aln_paf, ctg_paf, ctg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force, graph_depth)
 
     else:
         with ThreadPoolExecutor(max_workers=alignasm_worker_thread) as executor:
@@ -360,7 +366,7 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
             utg_paf, utg_aln_paf = future_utg.result()
 
         depth_loc = os.path.abspath(depth_loc)
-        return run_skype_func(CELL_LINE, os.path.abspath(os.path.join(PREFIX, "30_skype")), ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force, graph_depth)
+        return run_skype_func(CELL_LINE, os.path.abspath(skype_dir), ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force, graph_depth)
 
 def get_skype_parser():
     # Set up the command-line argument parser.
@@ -429,6 +435,8 @@ def get_skype_parser():
     parser_anl.add_argument("--preprocess_force", help="Don't trust previous file for preprocess", action='store_true')
 
     parser_anl.add_argument("--skype_force", help="Don't trust previous file for SKYPE pipeline", action='store_true')
+
+    parser_anl.add_argument("--skype_dir", type=str, help="Output directory for SKYPE analysis")
 
     parser_anl.add_argument("-d", "--graph_depth", help="Depth of breakend graph", type=int, default=4)
 
@@ -520,7 +528,7 @@ def main():
     elif args.command == "update_dependency":
         update_dependency(args.dependency_loc)
     elif args.command == "analysis":
-        analysis(args.prefix, args.WORK_DIR, args.CONTIG, args.UNITIG, args.DEPTH_LOC, args.thread, args.dependency_loc, args.progress, args.preprocess_force, args.skype_force, run_skype, args.graph_depth)
+        analysis(args.prefix, args.WORK_DIR, args.CONTIG, args.UNITIG, args.DEPTH_LOC, args.thread, args.dependency_loc, args.progress, args.preprocess_force, args.skype_force, run_skype, args.graph_depth, skype_dir=args.skype_dir)
     elif args.command == 'run_hifi':
         ctg_loc, utg_loc = hifi_preprocess(args.prefix, args.WORK_DIR, args.HIFI_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.hifiasm_args)
         
