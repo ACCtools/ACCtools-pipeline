@@ -229,8 +229,10 @@ def run_alignasm(PREFIX_PATH, thread, fa_loc, ref_loc, ALIGNASM_LOC, force):
 
     return tar_paf_tuple
 
+def subprocess_print(args, **kwargs):
+    print(*args)
 
-def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force, graph_depth, option_02="", skype_start_at=0):
+def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force, graph_depth, option_02="", skype_start_at=0, print_args=False):
     # Execute the core SKYPE analysis scripts.
     dep_folder = os.path.abspath(dep_folder)
     skype_folder_loc = os.path.join(dep_folder, "SKYPE")
@@ -253,16 +255,18 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
     THREAD = str(thread)
     PROGRESS = ["--progress"] if is_progress else []
 
+    subprocess_run = subprocess_print if print_args else subprocess.run
+
     if not os.path.isfile(os.path.join(PREFIX, 'virtual_sky.png')) or skype_force or skype_start_at > 0:
         if skype_start_at <= 0:
-            subprocess.run([
+            subprocess_run([
                 "python", os.path.join(skype_folder_loc, "00_depth_norm.py"),
                 MAIN_STAT_LOC, REF_STAT_LOC, RCS_BED
             ], check=True)
 
         if skype_start_at <= 2:
             EXTRA_02 = shlex.split(option_02) if option_02 else []
-            subprocess.run([
+            subprocess_run([
                 "python", os.path.join(skype_folder_loc, "02_Build_Breakend_Graph_Limited.py"),
                 PAF_LOC, CHR_FAI, TEL_BED, RPT_BED, RCS_BED, MAIN_STAT_NORM_LOC, PREFIX, READ_BAM_LOC,
                 "--alt", PAF_UTG_LOC, "--orignal_paf_loc", ctg_paf, utg_paf,
@@ -270,7 +274,7 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
             ] + EXTRA_02 + PROGRESS, check=True)
 
         if skype_start_at <= 11:
-            subprocess.run([
+            subprocess_run([
                 "python", os.path.join(skype_folder_loc, "11_Ref_Outlier_Contig_Modify.py"),
                 PAF_LOC, CHR_FAI, f"{PAF_LOC}.ppc.paf", PREFIX,
                 "--alt", PAF_UTG_LOC
@@ -280,7 +284,7 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
             free_mem_gb = psutil.virtual_memory().available / (1024 ** 3)
             thread_lim = int(free_mem_gb / 10)
 
-            subprocess.run([
+            subprocess_run([
                 "python", os.path.join(skype_folder_loc, "21_run_depth.py"),
                 f"{PAF_LOC}.ppc.paf", PREFIX,
                 "--pandepth_loc", os.path.join(dep_folder, 'PanDepth', 'bin', 'pandepth'),
@@ -288,14 +292,14 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
             ] + PROGRESS, check=True)
 
         if skype_start_at <= 22:
-            subprocess.run([
+            subprocess_run([
                 "python", os.path.join(skype_folder_loc, "22_save_matrix.py"),
                 RCS_BED, f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
                 TEL_BED, CHR_FAI, CYT_BED, PREFIX, "-t", THREAD, "--not_use_nclose_weight"
             ] + PROGRESS, check=True)
 
         if skype_start_at <= 23:
-            subprocess.run([
+            subprocess_run([
                 "python", "23_run_nnls.py", f"{PAF_LOC}.ppc.paf",
                 os.path.abspath(PREFIX), MAIN_STAT_NORM_LOC, RCS_BED, "-t", THREAD
             ], check=True, cwd=skype_folder_loc)
@@ -307,28 +311,28 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
             else:
                 JULIA_THREAD = min(int(THREAD), core_num)
 
-            subprocess.run([
+            subprocess_run([
                 "python", "-X", f"juliacall-threads={THREAD}", "-X", "juliacall-handle-signals=yes",
                 "24_cluster_weight.py", f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
                 TEL_BED, CHR_FAI, os.path.abspath(PREFIX), "-t", str(JULIA_THREAD)
             ], check=True, cwd=skype_folder_loc)
 
         if skype_start_at <= 30:
-            subprocess.run([
+            subprocess_run([
                 "python", os.path.join(skype_folder_loc, "30_virtual_sky.py"),
                 f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
                 TEL_BED, CHR_FAI, PREFIX, CELL_LINE
             ], check=True)
 
         if skype_start_at <= 31:
-            subprocess.run([
+            subprocess_run([
                 "python", os.path.join(skype_folder_loc, "31_depth_analysis.py"),
                 RCS_BED, f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
                 TEL_BED, CHR_FAI, CYT_BED, PREFIX, "-t", THREAD
             ] + PROGRESS, check=True)
         
 
-def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_folder, is_progress, force, skype_force, run_skype_func, graph_depth, no_utg=False, skype_dir=None, option_02="", skype_start_at=0):
+def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_folder, is_progress, force, skype_force, run_skype_func, graph_depth, no_utg=False, skype_dir=None, option_02="", skype_start_at=0, print_args=False):
     # Main analysis function that orchestrates alignment and SKYPE execution.
     os.makedirs(PREFIX, exist_ok=True)
 
@@ -366,7 +370,7 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
             ctg_paf, ctg_aln_paf = future_ctg.result()
 
         depth_loc = os.path.abspath(depth_loc)
-        return run_skype_func(CELL_LINE, os.path.abspath(skype_dir), ctg_paf, ctg_aln_paf, ctg_paf, ctg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force, graph_depth, option_02=option_02, skype_start_at=skype_start_at)
+        return run_skype_func(CELL_LINE, os.path.abspath(skype_dir), ctg_paf, ctg_aln_paf, ctg_paf, ctg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force, graph_depth, option_02=option_02, skype_start_at=skype_start_at, print_args=print_args)
 
     else:
         with ThreadPoolExecutor(max_workers=alignasm_worker_thread) as executor:
@@ -377,7 +381,7 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
             utg_paf, utg_aln_paf = future_utg.result()
 
         depth_loc = os.path.abspath(depth_loc)
-        return run_skype_func(CELL_LINE, os.path.abspath(skype_dir), ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force, graph_depth, option_02=option_02, skype_start_at=skype_start_at)
+        return run_skype_func(CELL_LINE, os.path.abspath(skype_dir), ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force, graph_depth, option_02=option_02, skype_start_at=skype_start_at, print_args=print_args)
 
 def get_skype_parser():
     # Set up the command-line argument parser.
@@ -456,6 +460,8 @@ def get_skype_parser():
 
     parser_anl.add_argument("--skype_start_at", type=int, default=0,
                             help='Start SKYPE pipeline from the given stage number (e.g., 23 to start at 23_run_nnls.py). Stages with smaller numbers are skipped.')
+
+    parser_anl.add_argument("--print_args", help="Print SKYPE subprocess commands instead of executing them", action='store_true')
 
     parser_dep = subparsers.add_parser("install_dependency", help="Hifi preprocessing for SKYPE pipeline")
 
@@ -550,7 +556,7 @@ def main():
     elif args.command == "update_dependency":
         update_dependency(args.dependency_loc)
     elif args.command == "analysis":
-        analysis(args.prefix, args.WORK_DIR, args.CONTIG, args.UNITIG, args.DEPTH_LOC, args.thread, args.dependency_loc, args.progress, args.preprocess_force, args.skype_force, run_skype, args.graph_depth, skype_dir=args.skype_dir, option_02=args.option_02, skype_start_at=args.skype_start_at)
+        analysis(args.prefix, args.WORK_DIR, args.CONTIG, args.UNITIG, args.DEPTH_LOC, args.thread, args.dependency_loc, args.progress, args.preprocess_force, args.skype_force, run_skype, args.graph_depth, skype_dir=args.skype_dir, option_02=args.option_02, skype_start_at=args.skype_start_at, print_args=args.print_args)
     elif args.command == 'run_hifi':
         ctg_loc, utg_loc = hifi_preprocess(args.prefix, args.WORK_DIR, args.HIFI_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.hifiasm_args)
         
