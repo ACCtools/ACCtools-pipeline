@@ -19,6 +19,13 @@ def gfa_to_fa(gfa_file, out_fa):
                     parts = gfa_line.strip().split("\t")
                     out_f.write(f">{parts[1]}\n{parts[2]}\n")
 
+def normalize_extra_args(extra_args):
+    if not extra_args:
+        return []
+    if isinstance(extra_args, str):
+        return shlex.split(extra_args)
+    return list(extra_args)
+
 def hifi_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, hifiasm_args):
     # Preprocessing pipeline for HiFi data using hifiasm.
     depth_window = 100 * 1000
@@ -29,6 +36,8 @@ def hifi_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, hi
         dep_folder = os.path.join(PREFIX, '99_dependency')
 
     THREAD = str(thread)
+    hifiasm_args = normalize_extra_args(hifiasm_args)
+    minimap2_preset = "lr:hq" if "--ont" in hifiasm_args else "map-hifi"
 
     # De novo assembly
     hifiasm_folder = os.path.join(PREFIX, '00_hifiasm')
@@ -68,7 +77,7 @@ def hifi_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, hi
     if not os.path.isfile(os.path.join(depth_folder, f'{CELL_LINE}.win.stat.gz')) or force:
         if not os.path.isfile(bam_file) or force:
             subprocess.run([
-                "minimap2", "-x", "map-hifi", "-K", "10G", "-t", THREAD,
+                "minimap2", "-x", minimap2_preset, "-K", "10G", "-t", THREAD,
                 "-a", refseq] + hifi_fastq + ["-o", sam_file
             ], check=True)
 
@@ -102,6 +111,7 @@ def flye_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, fl
         dep_folder = os.path.join(PREFIX, '99_dependency')
 
     THREAD = str(thread)
+    flye_args = normalize_extra_args(flye_args)
 
     # De novo assembly
     flye_folder = os.path.join(PREFIX, '00_flye')
@@ -295,7 +305,7 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
             subprocess_run([
                 "python", os.path.join(skype_folder_loc, "22_save_matrix.py"),
                 RCS_BED, f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
-                TEL_BED, CHR_FAI, CYT_BED, PREFIX, "-t", THREAD, "--not_use_nclose_weight"
+                TEL_BED, CHR_FAI, CYT_BED, PREFIX, "-t", THREAD
             ] + PROGRESS, check=True)
 
         if skype_start_at <= 23:
@@ -405,7 +415,7 @@ def get_skype_parser():
 
     parser_hifi_prepro.add_argument("--preprocess_force", help="Don't trust previous file for preprocess", action='store_true')
 
-    parser_hifi_prepro.add_argument("--hifiasm_args", type=str, help="Custom hifiasm args", nargs=argparse.REMAINDER)
+    parser_hifi_prepro.add_argument("--hifiasm_args", type=str, default="", help="Custom hifiasm args (single quoted string, e.g. --hifiasm_args=\"--ont --chem-c 0\")")
 
 
     parser_flye_prepro = subparsers.add_parser("preprocess_flye", help="Flye preprocessing for SKYPE pipeline")
@@ -424,7 +434,7 @@ def get_skype_parser():
 
     parser_flye_prepro.add_argument("--preprocess_force", help="Don't trust previous file for preprocess", action='store_true')
 
-    parser_flye_prepro.add_argument("--flye_args", type=str, help="Custom flye args", nargs=argparse.REMAINDER)
+    parser_flye_prepro.add_argument("--flye_args", type=str, default="", help="Custom flye args (single quoted string, e.g. --flye_args=\"--min-overlap 5000\")")
 
     parser_flye_prepro.add_argument("--minimap2_preset", type=str, help="Minimap2 preset for long-read mapping")
     
@@ -498,7 +508,7 @@ def get_skype_parser():
     parser_run.add_argument("--option_02", type=str, default="",
                             help='Extra args forwarded to 02_Build_Breakend_Graph_Limited.py')
 
-    parser_run.add_argument("--hifiasm_args", type=str, help="Custom hifiasm args", nargs=argparse.REMAINDER,)
+    parser_run.add_argument("--hifiasm_args", type=str, default="", help="Custom hifiasm args (single quoted string, e.g. --hifiasm_args=\"--ont --chem-c 0\")")
 
     
     parser_run_flye = subparsers.add_parser("run_flye", help="Pipeline for cancer long-read sequencing data using Flye")
@@ -526,7 +536,7 @@ def get_skype_parser():
     parser_run_flye.add_argument("--option_02", type=str, default="",
                                  help='Extra args forwarded to 02_Build_Breakend_Graph_Limited.py')
 
-    parser_run_flye.add_argument("--flye_args", type=str, help="Custom flye args", nargs=argparse.REMAINDER,)
+    parser_run_flye.add_argument("--flye_args", type=str, default="", help="Custom flye args (single quoted string, e.g. --flye_args=\"--min-overlap 5000\")")
 
     parser_run_flye.add_argument("--minimap2_preset", type=str, help="Minimap2 preset for long-read mapping")
 
