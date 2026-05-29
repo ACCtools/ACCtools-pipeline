@@ -26,7 +26,7 @@ mamba activate skype
 python SKYPE.py run_hifi <Working directory> <hifi.fastq(.gz) ...>
 
 # ONT R10 (HQ)
-python SKYPE.py run_hifi <Working directory> <hifi.fastq(.gz) ...> --hifiasm_args --ont
+python SKYPE.py run_hifi --hifiasm_args="--ont" <Working directory> <hifi.fastq(.gz) ...>
 
 # PacBio CLR
 python SKYPE.py run_flye <Working directory> pacbio-raw <pacbioCLR.fastq(.gz) ...>

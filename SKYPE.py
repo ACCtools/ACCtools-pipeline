@@ -401,11 +401,15 @@ def get_skype_parser():
     subparsers = parser.add_subparsers(dest="command", required=True)
     
 
-    parser_hifi_prepro = subparsers.add_parser("preprocess_hifi", help="Hifi preprocessing for SKYPE pipeline")
+    parser_hifi_prepro = subparsers.add_parser(
+        "preprocess_hifi",
+        help="Hifi preprocessing for SKYPE pipeline",
+        usage="%(prog)s [options] WORK_DIR HIFI_FASTQ [HIFI_FASTQ ...]",
+    )
 
     parser_hifi_prepro.add_argument("WORK_DIR", type=str, help="Working directory for pipeline")
-    
-    parser_hifi_prepro.add_argument("HIFI_FASTQ", type=str, help="Location of HiFi fastq file", nargs="+")
+
+    parser_hifi_prepro.add_argument("HIFI_FASTQ", type=str, help="Location of HiFi fastq file", nargs=argparse.REMAINDER)
 
     parser_hifi_prepro.add_argument("-t", "--thread", type=int, help="Number of thread", default=1)
 
@@ -485,11 +489,15 @@ def get_skype_parser():
     parser_up_dep.add_argument("dependency_loc", type=str, help="SKYPE dependency folder location")
     
     
-    parser_run = subparsers.add_parser("run_hifi", help="Pipeline for cancer hifi sequencing data")
+    parser_run = subparsers.add_parser(
+        "run_hifi",
+        help="Pipeline for cancer hifi sequencing data",
+        usage="%(prog)s [options] WORK_DIR HIFI_FASTQ [HIFI_FASTQ ...]",
+    )
 
     parser_run.add_argument("WORK_DIR", type=str, help="Working directory for pipeline")
-    
-    parser_run.add_argument("HIFI_FASTQ", type=str, help="Location of HiFi fastq file", nargs="+")
+
+    parser_run.add_argument("HIFI_FASTQ", type=str, help="Location of HiFi fastq file", nargs=argparse.REMAINDER)
 
     parser_run.add_argument("-t", "--thread", type=int, help="Number of thread", default=1)
 
@@ -557,9 +565,12 @@ def get_minimap2_preset_from_flye(FLYE_TYPE : str):
 
 def main():
     # Main function to parse arguments and execute the corresponding command.
-    args = get_skype_parser().parse_args()
+    parser = get_skype_parser()
+    args = parser.parse_args()
 
     if args.command == "preprocess_hifi":
+        if not args.HIFI_FASTQ:
+            parser.error("preprocess_hifi: at least one HIFI_FASTQ is required")
         hifi_preprocess(args.prefix, args.WORK_DIR, args.HIFI_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.hifiasm_args)
     elif args.command == "install_dependency":
         install_dependency(args.dependency_loc, args.force)
@@ -568,6 +579,8 @@ def main():
     elif args.command == "analysis":
         analysis(args.prefix, args.WORK_DIR, args.CONTIG, args.UNITIG, args.DEPTH_LOC, args.thread, args.dependency_loc, args.progress, args.preprocess_force, args.skype_force, run_skype, args.graph_depth, skype_dir=args.skype_dir, option_02=args.option_02, skype_start_at=args.skype_start_at, print_args=args.print_args)
     elif args.command == 'run_hifi':
+        if not args.HIFI_FASTQ:
+            parser.error("run_hifi: at least one HIFI_FASTQ is required")
         ctg_loc, utg_loc = hifi_preprocess(args.prefix, args.WORK_DIR, args.HIFI_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.hifiasm_args)
         
         depth_loc = os.path.join(args.WORK_DIR, '01_depth', f'{args.prefix}.win.stat.gz')
