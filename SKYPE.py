@@ -292,7 +292,7 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
 
         if skype_start_at <= 21:
             free_mem_gb = psutil.virtual_memory().available / (1024 ** 3)
-            thread_lim = int(free_mem_gb / 10)
+            thread_lim = int(free_mem_gb / 6)
 
             subprocess_run([
                 "python", os.path.join(skype_folder_loc, "21_run_depth.py"),
@@ -311,7 +311,7 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
         if skype_start_at <= 23:
             subprocess_run([
                 "python", "23_run_nnls.py", f"{PAF_LOC}.ppc.paf",
-                os.path.abspath(PREFIX), MAIN_STAT_NORM_LOC, RCS_BED, "-t", THREAD
+                os.path.abspath(PREFIX), MAIN_STAT_NORM_LOC, RCS_BED, PAF_UTG_LOC, "-t", THREAD
             ], check=True, cwd=skype_folder_loc)
 
         if skype_start_at <= 24:
