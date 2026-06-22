@@ -26,6 +26,29 @@ def normalize_extra_args(extra_args):
         return shlex.split(extra_args)
     return list(extra_args)
 
+def file_missing_or_stale(target_file, source_file):
+    return (
+        not os.path.isfile(target_file)
+        or os.path.getmtime(target_file) < os.path.getmtime(source_file)
+    )
+
+def coordinate_sort_and_index_bam(bam_file, sorted_bam_file, thread, force):
+    THREAD = str(thread)
+    bai_file = f"{sorted_bam_file}.bai"
+
+    if file_missing_or_stale(sorted_bam_file, bam_file) or force:
+        subprocess.run([
+            "samtools", "sort", "-@", THREAD,
+            "-o", sorted_bam_file, bam_file
+        ], check=True)
+
+    if file_missing_or_stale(bai_file, sorted_bam_file) or force:
+        subprocess.run([
+            "samtools", "index", "-@", THREAD, sorted_bam_file
+        ], check=True)
+
+    return sorted_bam_file
+
 def hifi_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, hifiasm_args):
     # Preprocessing pipeline for HiFi data using hifiasm.
     depth_window = 100 * 1000
@@ -73,6 +96,7 @@ def hifi_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, hi
     os.makedirs(depth_folder, exist_ok=True)
     sam_file = os.path.join(depth_folder, f'{CELL_LINE}.sam')
     bam_file = os.path.join(depth_folder, f'{CELL_LINE}.bam')
+    sorted_bam_file = os.path.join(depth_folder, f'{CELL_LINE}.sorted.bam')
 
     if not os.path.isfile(os.path.join(depth_folder, f'{CELL_LINE}.win.stat.gz')) or force:
         if not os.path.isfile(bam_file) or force:
@@ -87,10 +111,12 @@ def hifi_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, hi
             ], check=True)
             os.remove(sam_file)
 
+        depth_bam_file = coordinate_sort_and_index_bam(bam_file, sorted_bam_file, THREAD, force)
+
         subprocess.run([
             os.path.join(dep_folder, 'PanDepth/bin/pandepth'), "-w", str(depth_window), "-t", THREAD,
             "-o", os.path.join(depth_folder, CELL_LINE),
-            "-i", bam_file
+            "-i", depth_bam_file
         ], check=True)
 
     return out_fa_list
@@ -135,6 +161,7 @@ def flye_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, fl
     os.makedirs(depth_folder, exist_ok=True)
     sam_file = os.path.join(depth_folder, f'{CELL_LINE}.sam')
     bam_file = os.path.join(depth_folder, f'{CELL_LINE}.bam')
+    sorted_bam_file = os.path.join(depth_folder, f'{CELL_LINE}.sorted.bam')
         
     if not os.path.isfile(os.path.join(depth_folder, f'{CELL_LINE}.win.stat.gz')) or force:
         if not os.path.isfile(bam_file) or force:
@@ -149,10 +176,12 @@ def flye_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, fl
             ], check=True)
             os.remove(sam_file)
         
+        depth_bam_file = coordinate_sort_and_index_bam(bam_file, sorted_bam_file, THREAD, force)
+
         subprocess.run([
             os.path.join(dep_folder, 'PanDepth/bin/pandepth'), "-w", str(depth_window), "-t", THREAD,
             "-o", os.path.join(depth_folder, CELL_LINE),
-            "-i", bam_file
+            "-i", depth_bam_file
         ], check=True)
 
     return out_fa_list
@@ -261,6 +290,9 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
     PAF_LOC = ctg_aln_paf
     PAF_UTG_LOC = utg_aln_paf
     READ_BAM_LOC = os.path.join(os.path.dirname(depth_loc), f'{CELL_LINE}.bam')
+    SORTED_READ_BAM_LOC = os.path.join(os.path.dirname(depth_loc), f'{CELL_LINE}.sorted.bam')
+    if os.path.isfile(SORTED_READ_BAM_LOC):
+        READ_BAM_LOC = SORTED_READ_BAM_LOC
 
     THREAD = str(thread)
     PROGRESS = ["--progress"] if is_progress else []
