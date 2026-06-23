@@ -8,6 +8,7 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+MEM_SAFE_RATIO = 0.8
 
 
 def gfa_to_fa(gfa_file, out_fa):
@@ -32,22 +33,35 @@ def file_missing_or_stale(target_file, source_file):
         or os.path.getmtime(target_file) < os.path.getmtime(source_file)
     )
 
-def coordinate_sort_and_index_bam(bam_file, sorted_bam_file, thread, force):
+def get_samtools_sort_memory_limit(thread):
+    thread = max(int(thread), 1)
+    memory_per_thread_mb = int(
+        psutil.virtual_memory().available * MEM_SAFE_RATIO / thread / (1024 ** 2)
+    )
+    return f"{max(memory_per_thread_mb, 1)}M"
+
+def index_bam_with_samtools(sorted_bam_file, thread, force):
     THREAD = str(thread)
     bai_file = f"{sorted_bam_file}.bai"
 
-    if file_missing_or_stale(sorted_bam_file, bam_file) or force:
-        subprocess.run([
-            "samtools", "sort", "-@", THREAD,
-            "-o", sorted_bam_file, bam_file
-        ], check=True)
-
     if file_missing_or_stale(bai_file, sorted_bam_file) or force:
         subprocess.run([
-            "samtools", "index", "-@", THREAD, sorted_bam_file
+            "samtools", "index", "-@", THREAD, sorted_bam_file, bai_file
         ], check=True)
 
     return sorted_bam_file
+
+def sort_sam_and_index_bam_with_samtools(sam_file, sorted_bam_file, thread, force):
+    THREAD = str(thread)
+
+    if file_missing_or_stale(sorted_bam_file, sam_file) or force:
+        subprocess.run([
+            "samtools", "sort", "-@", THREAD,
+            "-m", get_samtools_sort_memory_limit(THREAD),
+            "-O", "BAM", "-o", sorted_bam_file, sam_file
+        ], check=True)
+
+    return index_bam_with_samtools(sorted_bam_file, THREAD, force)
 
 def hifi_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, hifiasm_args):
     # Preprocessing pipeline for HiFi data using hifiasm.
@@ -95,23 +109,19 @@ def hifi_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, hi
     depth_folder = os.path.join(PREFIX, '01_depth')
     os.makedirs(depth_folder, exist_ok=True)
     sam_file = os.path.join(depth_folder, f'{CELL_LINE}.sam')
-    bam_file = os.path.join(depth_folder, f'{CELL_LINE}.bam')
     sorted_bam_file = os.path.join(depth_folder, f'{CELL_LINE}.sorted.bam')
 
     if not os.path.isfile(os.path.join(depth_folder, f'{CELL_LINE}.win.stat.gz')) or force:
-        if not os.path.isfile(bam_file) or force:
+        if not os.path.isfile(sorted_bam_file) or force:
             subprocess.run([
                 "minimap2", "-x", minimap2_preset, "-K", "10G", "-t", THREAD,
                 "-a", refseq] + hifi_fastq + ["-o", sam_file
             ], check=True)
 
-            subprocess.run([
-                "sambamba", "view", "-l", "5", "-t", THREAD, "-f", "bam", "-S",
-                sam_file, "-o", bam_file
-            ], check=True)
+            depth_bam_file = sort_sam_and_index_bam_with_samtools(sam_file, sorted_bam_file, THREAD, force)
             os.remove(sam_file)
-
-        depth_bam_file = coordinate_sort_and_index_bam(bam_file, sorted_bam_file, THREAD, force)
+        else:
+            depth_bam_file = index_bam_with_samtools(sorted_bam_file, THREAD, force)
 
         subprocess.run([
             os.path.join(dep_folder, 'PanDepth/bin/pandepth'), "-w", str(depth_window), "-t", THREAD,
@@ -160,23 +170,19 @@ def flye_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, fl
     depth_folder = os.path.join(PREFIX, '01_depth')
     os.makedirs(depth_folder, exist_ok=True)
     sam_file = os.path.join(depth_folder, f'{CELL_LINE}.sam')
-    bam_file = os.path.join(depth_folder, f'{CELL_LINE}.bam')
     sorted_bam_file = os.path.join(depth_folder, f'{CELL_LINE}.sorted.bam')
         
     if not os.path.isfile(os.path.join(depth_folder, f'{CELL_LINE}.win.stat.gz')) or force:
-        if not os.path.isfile(bam_file) or force:
+        if not os.path.isfile(sorted_bam_file) or force:
             subprocess.run([
                 "minimap2", "-x", minimap2_preset, "-K", "10G", "-t", THREAD,
                 "-a", refseq] + hifi_fastq + ["-o", sam_file
             ], check=True)
 
-            subprocess.run([
-                "sambamba", "view", "-l", "5", "-t", THREAD, "-f", "bam", "-S",
-                sam_file, "-o", bam_file
-            ], check=True)
+            depth_bam_file = sort_sam_and_index_bam_with_samtools(sam_file, sorted_bam_file, THREAD, force)
             os.remove(sam_file)
-        
-        depth_bam_file = coordinate_sort_and_index_bam(bam_file, sorted_bam_file, THREAD, force)
+        else:
+            depth_bam_file = index_bam_with_samtools(sorted_bam_file, THREAD, force)
 
         subprocess.run([
             os.path.join(dep_folder, 'PanDepth/bin/pandepth'), "-w", str(depth_window), "-t", THREAD,
@@ -323,7 +329,7 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
             ], check=True)
 
         if skype_start_at <= 21:
-            free_mem_gb = psutil.virtual_memory().available / (1024 ** 3)
+            free_mem_gb = psutil.virtual_memory().available * MEM_SAFE_RATIO / (1024 ** 3)
             thread_lim = int(free_mem_gb / 6)
 
             subprocess_run([
