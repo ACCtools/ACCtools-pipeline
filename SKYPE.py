@@ -508,7 +508,7 @@ def get_skype_parser():
     parser_anl.add_argument("-d", "--graph_depth", help="Depth of breakend graph", type=int, default=4)
 
     parser_anl.add_argument("--option_02", type=str, default="",
-                            help='Extra args forwarded to 02_Build_Breakend_Graph_Limited.py')
+                            help='Extra args forwarded to 02_Build_Breakend_Graph_Limited.py, e.g. "--variant_mode"')
 
     parser_anl.add_argument("--skype_start_at", type=int, default=0,
                             help='Start SKYPE pipeline from the given stage number (e.g., 23 to start at 23_run_nnls.py). Stages with smaller numbers are skipped.')
@@ -552,7 +552,7 @@ def get_skype_parser():
     parser_run.add_argument("-d", "--graph_depth", help="Depth of breakend graph", type=int, default=4)
 
     parser_run.add_argument("--option_02", type=str, default="",
-                            help='Extra args forwarded to 02_Build_Breakend_Graph_Limited.py')
+                            help='Extra args forwarded to 02_Build_Breakend_Graph_Limited.py, e.g. "--variant_mode"')
 
     parser_run.add_argument("--hifiasm_args", type=str, default="", help="Custom hifiasm args (single quoted string, e.g. --hifiasm_args=\"--ont --chem-c 0\")")
 
@@ -580,7 +580,7 @@ def get_skype_parser():
     parser_run_flye.add_argument("-d", "--graph_depth", help="Depth of breakend graph", type=int, default=4)
 
     parser_run_flye.add_argument("--option_02", type=str, default="",
-                                 help='Extra args forwarded to 02_Build_Breakend_Graph_Limited.py')
+                                 help='Extra args forwarded to 02_Build_Breakend_Graph_Limited.py, e.g. "--variant_mode"')
 
     parser_run_flye.add_argument("--flye_args", type=str, default="", help="Custom flye args (single quoted string, e.g. --flye_args=\"--min-overlap 5000\")")
 
