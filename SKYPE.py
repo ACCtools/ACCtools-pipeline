@@ -4,11 +4,72 @@ import shutil
 import psutil
 import argparse
 import subprocess
+import re
+from dataclasses import dataclass
+from typing import Optional
 
 from concurrent.futures import ThreadPoolExecutor
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MEM_SAFE_RATIO = 0.8
+
+REFERENCE_HS1 = "hs1"
+REFERENCE_HG38 = "hg38"
+
+HS1_DEPTH_DIR = "01_depth"
+HG38_DEPTH_DIR = "02_depth_hg38"
+HS1_ALIGNASM_DIR = "20_alignasm"
+HG38_ALIGNASM_DIR = "21_alignasm_hg38"
+HS1_SKYPE_DIR = "30_skype"
+HG38_SKYPE_DIR = "31_skype_hg38"
+
+# Hg38 const
+DEFAULT_ALIGNASM_PRIORITY_REF = "telomere_decoy"
+HG38_URL = "https://hgdownload.soe.ucsc.edu/goldenpath/hg38/bigZips/hg38.fa.gz"
+HG38_SOURCE_FA = "hg38.fa"
+HG38_ALIGNASM_FA = "hg38.custom.primary.telomere_decoy.ypar_masked.fa"
+HG38_DEPTH_FA = "hg38.custom.primary.ypar_unmasked.fa"
+HG38_PUBLIC_FAI = "hg38.fa.fai"
+HG38_ACEN_BED = "hg38_acen.bed"
+HG38_CYTOBAND_BED = "hg38_cytobands_allchrs.bed"
+HG38_TELOMERE_BED = "hg38_telomere.bed"
+HG38_ALIGNASM_EXCLUDE_CONTIGS = ("chrM",)
+
+VCF_INS_ALIGN_MIN_BP = 1000
+VCF_INS_SEQUENCE_INFO_KEYS = ("INSSEQ", "SVINSSEQ", "SEQ")
+
+
+@dataclass
+class ReferenceBundle:
+    name: str
+    alignasm_ref: str
+    depth_ref: str
+    chr_fai: str
+    tel_bed: str
+    rpt_bed: str
+    rcs_bed: str
+    cyt_bed: str
+    ref_stat: Optional[str]
+
+
+def get_reference_name(reference):
+    return getattr(reference, "name", reference)
+
+
+def reference_stage_dir(reference, hs1_dir, hg38_dir):
+    return hg38_dir if get_reference_name(reference) == REFERENCE_HG38 else hs1_dir
+
+
+def depth_dir_name(reference):
+    return reference_stage_dir(reference, HS1_DEPTH_DIR, HG38_DEPTH_DIR)
+
+
+def alignasm_dir_name(reference):
+    return reference_stage_dir(reference, HS1_ALIGNASM_DIR, HG38_ALIGNASM_DIR)
+
+
+def skype_dir_name(reference):
+    return reference_stage_dir(reference, HS1_SKYPE_DIR, HG38_SKYPE_DIR)
 
 
 def gfa_to_fa(gfa_file, out_fa):
@@ -27,10 +88,237 @@ def normalize_extra_args(extra_args):
         return shlex.split(extra_args)
     return list(extra_args)
 
-def file_missing_or_stale(target_file, source_file):
-    return (
-        not os.path.isfile(target_file)
-        or os.path.getmtime(target_file) < os.path.getmtime(source_file)
+def sanitize_vcf_id(value):
+    value = str(value) if value not in (None, "") else "unknown"
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
+
+def vcf_ins_query_name(line_no, rec_id):
+    return f"vcf_ins_{int(line_no)}_{sanitize_vcf_id(rec_id)}"
+
+def parse_vcf_info(info_text):
+    info = {}
+    if info_text in ("", "."):
+        return info
+    for item in info_text.split(";"):
+        if not item:
+            continue
+        if "=" in item:
+            key, value = item.split("=", 1)
+            info[key] = value
+        else:
+            info[item] = True
+    return info
+
+def clean_vcf_sequence(value):
+    if value in (None, True, ""):
+        return None
+    seq = str(value).split(",", 1)[0].strip().upper()
+    if not seq or seq == ".":
+        return None
+    if any(base not in "ACGTN" for base in seq):
+        return None
+    return seq
+
+def is_symbolic_or_breakend_alt(alt):
+    if not alt or alt == ".":
+        return True
+    alt = alt.split(",", 1)[0]
+    return (alt.startswith("<") and alt.endswith(">")) or "[" in alt or "]" in alt
+
+def extract_vcf_ins_sequence(ref, alt, info):
+    alt = str(alt).split(",", 1)[0] if alt is not None else ""
+    if not is_symbolic_or_breakend_alt(alt):
+        alt_seq = clean_vcf_sequence(alt)
+        ref_seq = clean_vcf_sequence(ref)
+        if alt_seq:
+            if ref_seq and len(alt_seq) > len(ref_seq) and alt_seq.startswith(ref_seq):
+                return alt_seq[len(ref_seq):]
+            return alt_seq
+
+    for key in VCF_INS_SEQUENCE_INFO_KEYS:
+        seq = clean_vcf_sequence(info.get(key))
+        if seq:
+            return seq
+    return None
+
+def collect_vcf_ins_sequences(vcf_path, min_bp=VCF_INS_ALIGN_MIN_BP):
+    records = []
+    with open(vcf_path, "rt", encoding="ascii") as vcf:
+        for line_no, line in enumerate(vcf, start=1):
+            line = line.rstrip("\n")
+            if not line or line.startswith("#"):
+                continue
+            cols = line.split("\t")
+            if len(cols) < 8:
+                continue
+            chrom, pos, rec_id, ref, alt, _, _, info_text = cols[:8]
+            info = parse_vcf_info(info_text)
+            if str(info.get("SVTYPE", "")).upper() != "INS":
+                continue
+            if rec_id in ("", "."):
+                rec_id = f"VCF_RECORD_{line_no}"
+            seq = extract_vcf_ins_sequence(ref, alt, info)
+            if seq is None or len(seq) < int(min_bp):
+                continue
+            records.append({
+                "line_no": line_no,
+                "id": rec_id,
+                "name": vcf_ins_query_name(line_no, rec_id),
+                "chrom": chrom,
+                "pos": pos,
+                "sequence": seq,
+            })
+    return records
+
+def write_fasta_record(out_f, name, seq, width=80):
+    out_f.write(f">{name}\n")
+    for st in range(0, len(seq), width):
+        out_f.write(seq[st:st + width] + "\n")
+
+def write_vcf_ins_fasta(vcf_path, out_fa, min_bp=VCF_INS_ALIGN_MIN_BP, force=False):
+    records = collect_vcf_ins_sequences(vcf_path, min_bp)
+    is_stale = (
+        not os.path.isfile(out_fa)
+        or os.path.getmtime(out_fa) < os.path.getmtime(vcf_path)
+    )
+    if force or is_stale:
+        with open(out_fa, "wt", encoding="ascii") as out:
+            for record in records:
+                write_fasta_record(out, record["name"], record["sequence"])
+    return len(records)
+
+def require_file(path, label):
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"Missing {label}: {path}")
+
+def ensure_fai(fasta_path, force):
+    fai_path = f"{fasta_path}.fai"
+    if force or not os.path.isfile(fai_path):
+        subprocess.run(["samtools", "faidx", fasta_path], check=True)
+    return fai_path
+
+def get_fai_contig_length(fai_path, contig_name):
+    with open(fai_path, encoding="ascii") as fai:
+        for line in fai:
+            if not line.strip():
+                continue
+            name, length, *_ = line.rstrip("\n").split("\t")
+            if name == contig_name:
+                return int(length)
+    raise FileNotFoundError(
+        f"Missing hg38 telomere decoy for --alignasm_priority_ref {contig_name!r}: {fai_path}"
+    )
+
+def write_hg38_telomere_bed(alignasm_fai, out_bed, decoy_name, force):
+    decoy_length = get_fai_contig_length(alignasm_fai, decoy_name)
+    expected = f"{decoy_name}\t0\t{decoy_length}\n"
+    if os.path.isfile(out_bed) and not force:
+        with open(out_bed, encoding="ascii") as bed:
+            if bed.read() == expected:
+                return out_bed
+
+    with open(out_bed, "w", encoding="ascii") as out:
+        out.write(expected)
+    return out_bed
+
+def ensure_hg38_source(dep_folder, force):
+    source_fa = os.path.join(dep_folder, HG38_SOURCE_FA)
+    source_gz = f"{source_fa}.gz"
+    if os.path.isfile(source_fa) and not force:
+        return source_fa
+
+    if force or not os.path.isfile(source_gz):
+        subprocess.run(["wget", "-nv", "-O", source_gz, HG38_URL], check=True)
+    subprocess.run(["pigz", "-d", "-f", source_gz], check=True)
+    return source_fa
+
+def run_make_custom_hg38(input_fa, output_fa, force, extra_args=None):
+    if os.path.isfile(output_fa) and not force:
+        return output_fa
+
+    cmd = [
+        "python3", os.path.join(SCRIPT_DIR, "make_custom_hg38.py"),
+        input_fa, output_fa, "--force"
+    ]
+    if extra_args:
+        cmd.extend(extra_args)
+    subprocess.run(cmd, check=True)
+    return output_fa
+
+def prepare_hg38_references(dep_folder, force, telomere_decoy_name=DEFAULT_ALIGNASM_PRIORITY_REF):
+    public_data = os.path.join(dep_folder, "SKYPE", "public_data")
+    os.makedirs(public_data, exist_ok=True)
+    public_fai = os.path.join(public_data, HG38_PUBLIC_FAI)
+    tel_bed = os.path.join(public_data, HG38_TELOMERE_BED)
+    acen_bed = os.path.join(public_data, HG38_ACEN_BED)
+    cyt_bed = os.path.join(public_data, HG38_CYTOBAND_BED)
+    require_file(public_fai, "hg38 FAI")
+    require_file(acen_bed, "hg38 acen BED")
+    require_file(cyt_bed, "hg38 cytoband BED")
+
+    alignasm_fa = os.path.join(dep_folder, HG38_ALIGNASM_FA)
+    depth_fa = os.path.join(dep_folder, HG38_DEPTH_FA)
+
+    needs_alignasm_fa = force or not os.path.isfile(alignasm_fa)
+    needs_depth_fa = force or not os.path.isfile(depth_fa)
+
+    if needs_alignasm_fa or needs_depth_fa:
+        source_fa = ensure_hg38_source(dep_folder, force)
+        if needs_alignasm_fa:
+            exclude_args = [
+                arg
+                for contig in HG38_ALIGNASM_EXCLUDE_CONTIGS
+                for arg in ("--exclude-contig", contig)
+            ]
+            exclude_args.extend(["--telomere-name", telomere_decoy_name])
+            run_make_custom_hg38(source_fa, alignasm_fa, force, exclude_args)
+        if needs_depth_fa:
+            run_make_custom_hg38(
+                source_fa, depth_fa, force,
+                ["--no-mask-y-par", "--no-telomere-decoy"]
+            )
+
+    alignasm_fai = ensure_fai(alignasm_fa, force)
+    ensure_fai(depth_fa, force)
+    write_hg38_telomere_bed(alignasm_fai, tel_bed, telomere_decoy_name, force)
+
+    return ReferenceBundle(
+        name=REFERENCE_HG38,
+        alignasm_ref=alignasm_fa,
+        depth_ref=depth_fa,
+        chr_fai=public_fai,
+        tel_bed=tel_bed,
+        rpt_bed="",
+        rcs_bed=acen_bed,
+        cyt_bed=cyt_bed,
+        ref_stat=None,
+    )
+
+def resolve_reference_bundle(
+    dep_folder,
+    reference,
+    force=False,
+    telomere_decoy_name=DEFAULT_ALIGNASM_PRIORITY_REF,
+):
+    dep_folder = os.path.abspath(dep_folder)
+    skype_folder_loc = os.path.join(dep_folder, "SKYPE")
+    public_data = os.path.join(skype_folder_loc, "public_data")
+
+    if reference == REFERENCE_HG38:
+        return prepare_hg38_references(dep_folder, force, telomere_decoy_name)
+    if reference != REFERENCE_HS1:
+        raise ValueError(f"Unsupported reference: {reference}")
+
+    return ReferenceBundle(
+        name=REFERENCE_HS1,
+        alignasm_ref=os.path.join(dep_folder, 'chm13v2.0_maskedY_noM.fa'),
+        depth_ref=os.path.join(dep_folder, 'chm13v2.0.fa'),
+        chr_fai=os.path.join(public_data, "chm13v2.0.fa.fai"),
+        tel_bed=os.path.join(public_data, "chm13v2.0_telomere.bed"),
+        rpt_bed=os.path.join(public_data, "chm13v2.0_repeat.m.bed"),
+        rcs_bed=os.path.join(public_data, "chm13v2.0_censat_v2.1.m.bed"),
+        cyt_bed=os.path.join(public_data, "chm13v2.0_cytobands_allchrs.bed"),
+        ref_stat=os.path.join(public_data, "CHM13.win.stat.gz"),
     )
 
 def get_samtools_sort_memory_limit(thread):
@@ -44,7 +332,7 @@ def index_bam_with_samtools(sorted_bam_file, thread, force):
     THREAD = str(thread)
     bai_file = f"{sorted_bam_file}.bai"
 
-    if file_missing_or_stale(bai_file, sorted_bam_file) or force:
+    if force or not os.path.isfile(bai_file):
         subprocess.run([
             "samtools", "index", "-@", THREAD, sorted_bam_file, bai_file
         ], check=True)
@@ -54,7 +342,7 @@ def index_bam_with_samtools(sorted_bam_file, thread, force):
 def sort_sam_and_index_bam_with_samtools(sam_file, sorted_bam_file, thread, force):
     THREAD = str(thread)
 
-    if file_missing_or_stale(sorted_bam_file, sam_file) or force:
+    if force or not os.path.isfile(sorted_bam_file):
         subprocess.run([
             "samtools", "sort", "-@", THREAD,
             "-m", get_samtools_sort_memory_limit(THREAD),
@@ -63,7 +351,10 @@ def sort_sam_and_index_bam_with_samtools(sam_file, sorted_bam_file, thread, forc
 
     return index_bam_with_samtools(sorted_bam_file, THREAD, force)
 
-def hifi_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, hifiasm_args):
+def hifi_preprocess(
+    CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, hifiasm_args,
+    reference=REFERENCE_HS1, alignasm_priority_ref=DEFAULT_ALIGNASM_PRIORITY_REF,
+):
     # Preprocessing pipeline for HiFi data using hifiasm.
     depth_window = 100 * 1000
     os.makedirs(PREFIX, exist_ok=True)
@@ -71,6 +362,9 @@ def hifi_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, hi
     if dep_folder is None:
         install_dependency(os.path.join(PREFIX, '99_dependency'), True)
         dep_folder = os.path.join(PREFIX, '99_dependency')
+    reference_bundle = resolve_reference_bundle(
+        dep_folder, reference, force, alignasm_priority_ref
+    )
 
     THREAD = str(thread)
     hifiasm_args = normalize_extra_args(hifiasm_args)
@@ -104,9 +398,9 @@ def hifi_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, hi
         out_fa_list.append(out_fa)
 
     # Mapping read to reference
-    refseq = os.path.join(dep_folder, 'chm13v2.0.fa')
+    refseq = reference_bundle.depth_ref
 
-    depth_folder = os.path.join(PREFIX, '01_depth')
+    depth_folder = os.path.join(PREFIX, depth_dir_name(reference_bundle))
     os.makedirs(depth_folder, exist_ok=True)
     sam_file = os.path.join(depth_folder, f'{CELL_LINE}.sam')
     sorted_bam_file = os.path.join(depth_folder, f'{CELL_LINE}.sorted.bam')
@@ -131,7 +425,11 @@ def hifi_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, hi
 
     return out_fa_list
 
-def flye_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, flye_type, flye_args, minimap2_preset):
+def flye_preprocess(
+    CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, flye_type,
+    flye_args, minimap2_preset, reference=REFERENCE_HS1,
+    alignasm_priority_ref=DEFAULT_ALIGNASM_PRIORITY_REF,
+):
     # Preprocessing pipeline for long-read data using Flye.
     minimap2_preset_flye = get_minimap2_preset_from_flye(flye_type)
     if minimap2_preset_flye is None and minimap2_preset is None:
@@ -145,6 +443,9 @@ def flye_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, fl
     if dep_folder is None:
         install_dependency(os.path.join(PREFIX, '99_dependency'), True)
         dep_folder = os.path.join(PREFIX, '99_dependency')
+    reference_bundle = resolve_reference_bundle(
+        dep_folder, reference, force, alignasm_priority_ref
+    )
 
     THREAD = str(thread)
     flye_args = normalize_extra_args(flye_args)
@@ -165,9 +466,9 @@ def flye_preprocess(CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, fl
         subprocess.run(flye_cmd, check=True)
     
     # Mapping read to reference
-    refseq = os.path.join(dep_folder, 'chm13v2.0.fa')
+    refseq = reference_bundle.depth_ref
     
-    depth_folder = os.path.join(PREFIX, '01_depth')
+    depth_folder = os.path.join(PREFIX, depth_dir_name(reference_bundle))
     os.makedirs(depth_folder, exist_ok=True)
     sam_file = os.path.join(depth_folder, f'{CELL_LINE}.sam')
     sorted_bam_file = os.path.join(depth_folder, f'{CELL_LINE}.sorted.bam')
@@ -241,60 +542,80 @@ def update_dependency(dep_folder):
     subprocess.run("git clone https://github.com/ACCtools/SKYPE", cwd=dep_folder, shell=True, check=True)
 
 
-def run_alignasm(PREFIX_PATH, thread, fa_loc, ref_loc, ALIGNASM_LOC, force):
+def is_nonempty_file(path):
+    return os.path.isfile(path) and os.path.getsize(path) > 0
+
+def run_alignasm(PREFIX_PATH, thread, fa_loc, ref_loc, ALIGNASM_LOC, force, priority_ref=None):
     # Run the alignasm tool for sequence alignment.
     THREAD = str(thread)
 
-    tar_paf_tuple = (f"{PREFIX_PATH}.paf", f"{PREFIX_PATH}.aln.paf")
+    paf_file = f"{PREFIX_PATH}.paf"
+    pat_fa_file = f"{PREFIX_PATH}.pat.fa"
+    alt_paf_file = f"{PREFIX_PATH}.alt.paf"
+    tar_paf_tuple = (paf_file, f"{PREFIX_PATH}.aln.paf")
     is_file = all(map(os.path.isfile, tar_paf_tuple))
 
     if not is_file or force:
         subprocess.run([
             "minimap2", "--cs", "-t", THREAD, "-x", "asm20",
             "--no-long-join", "-r2k", "-K10G",
-            ref_loc, fa_loc, "-o", f"{PREFIX_PATH}.paf"
+            ref_loc, fa_loc, "-o", paf_file
         ], check=True)
 
-        subprocess.run([
-            "python3", os.path.join(SCRIPT_DIR, "paf_gap_seq.py"),
-            fa_loc, f"{PREFIX_PATH}.paf", f"{PREFIX_PATH}.pat.fa"
-        ], check=True)
+        if is_nonempty_file(paf_file):
+            subprocess.run([
+                "python3", os.path.join(SCRIPT_DIR, "paf_gap_seq.py"),
+                fa_loc, paf_file, pat_fa_file
+            ], check=True)
 
-        subprocess.run([
-            "minimap2", "--cs", "-t", THREAD, "-x", "asm20",
-            "-r2k", "-K10G",
-            ref_loc, f"{PREFIX_PATH}.pat.fa", "-o", f"{PREFIX_PATH}.alt.paf"
-        ], check=True)
+            subprocess.run([
+                "minimap2", "--cs", "-t", THREAD, "-x", "asm20",
+                "-r2k", "-K10G",
+                ref_loc, pat_fa_file, "-o", alt_paf_file
+            ], check=True)
+        else:
+            open(pat_fa_file, "wt").close()
+            open(alt_paf_file, "wt").close()
 
-        subprocess.run([
-            ALIGNASM_LOC,
-            f"{PREFIX_PATH}.paf", "-a", f"{PREFIX_PATH}.alt.paf",
+        alignasm_cmd = [
+            ALIGNASM_LOC, paf_file,
             "-t", THREAD, "--non_skip_linkable"
-        ], check=True)
+        ]
+        if is_nonempty_file(alt_paf_file):
+            alignasm_cmd.extend(["-a", alt_paf_file])
+        if priority_ref:
+            alignasm_cmd.extend(["--priority_ref", priority_ref])
+        subprocess.run(alignasm_cmd, check=True)
 
     return tar_paf_tuple
 
 def subprocess_print(args, **kwargs):
     print(*args)
 
-def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force, graph_depth, option_02="", skype_start_at=0, print_args=False):
+def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf,
+              depth_loc, thread, dep_folder, is_progress, skype_force, graph_depth,
+              option_02="", skype_start_at=0, print_args=False,
+              benchmark_vcf_loc=None, reference_bundle=None, vcf_ins_aln_paf=None):
     # Execute the core SKYPE analysis scripts.
     dep_folder = os.path.abspath(dep_folder)
     skype_folder_loc = os.path.join(dep_folder, "SKYPE")
+    if reference_bundle is None:
+        reference_bundle = resolve_reference_bundle(dep_folder, REFERENCE_HS1)
 
-    TEL_BED = os.path.join(skype_folder_loc,"public_data/chm13v2.0_telomere.bed")
-    CHR_FAI = os.path.join(skype_folder_loc,"public_data/chm13v2.0.fa.fai")
-    RPT_BED = os.path.join(skype_folder_loc,"public_data/chm13v2.0_repeat.m.bed")
-    RCS_BED = os.path.join(skype_folder_loc,"public_data/chm13v2.0_censat_v2.1.m.bed")
-    CYT_BED = os.path.join(skype_folder_loc,"public_data/chm13v2.0_cytobands_allchrs.bed")
-    REF_STAT_LOC = os.path.join(skype_folder_loc,"public_data/CHM13.win.stat.gz")
+    TEL_BED = reference_bundle.tel_bed
+    CHR_FAI = reference_bundle.chr_fai
+    RPT_BED = reference_bundle.rpt_bed
+    RCS_BED = reference_bundle.rcs_bed
+    CYT_BED = reference_bundle.cyt_bed
+    REF_STAT_LOC = reference_bundle.ref_stat
 
 
     # python to bash variable
     MAIN_STAT_LOC = depth_loc
-    MAIN_STAT_NORM_LOC = depth_loc.replace('.win.stat.gz', '_normalized.win.stat.gz')
+    MAIN_STAT_NORM_LOC = depth_loc if REF_STAT_LOC is None else depth_loc.replace('.win.stat.gz', '_normalized.win.stat.gz')
     PAF_LOC = ctg_aln_paf
     PAF_UTG_LOC = utg_aln_paf
+    PPC_PAF_LOC = os.path.join(PREFIX, "vcf_synthetic.paf.ppc.paf") if benchmark_vcf_loc else f"{PAF_LOC}.ppc.paf"
     READ_BAM_LOC = os.path.join(os.path.dirname(depth_loc), f'{CELL_LINE}.bam')
     SORTED_READ_BAM_LOC = os.path.join(os.path.dirname(depth_loc), f'{CELL_LINE}.sorted.bam')
     if os.path.isfile(SORTED_READ_BAM_LOC):
@@ -306,7 +627,7 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
     subprocess_run = subprocess_print if print_args else subprocess.run
 
     if not os.path.isfile(os.path.join(PREFIX, 'virtual_sky.png')) or skype_force or skype_start_at > 0:
-        if skype_start_at <= 0:
+        if skype_start_at <= 0 and REF_STAT_LOC is not None:
             subprocess_run([
                 "python", os.path.join(skype_folder_loc, "00_depth_norm.py"),
                 MAIN_STAT_LOC, REF_STAT_LOC, RCS_BED
@@ -314,18 +635,24 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
 
         if skype_start_at <= 2:
             EXTRA_02 = shlex.split(option_02) if option_02 else []
-            subprocess_run([
+            graph_paf_loc = PAF_UTG_LOC if benchmark_vcf_loc else PAF_LOC
+            build_graph_cmd = [
                 "python", os.path.join(skype_folder_loc, "02_Build_Breakend_Graph_Limited.py"),
-                PAF_LOC, CHR_FAI, TEL_BED, RPT_BED, RCS_BED, MAIN_STAT_NORM_LOC, PREFIX, READ_BAM_LOC,
-                "--alt", PAF_UTG_LOC, "--orignal_paf_loc", ctg_paf, utg_paf,
+                graph_paf_loc, CHR_FAI, TEL_BED, RPT_BED, RCS_BED, MAIN_STAT_NORM_LOC, PREFIX, READ_BAM_LOC,
                 "-t", THREAD, "-d", str(graph_depth),
-            ] + EXTRA_02 + PROGRESS, check=True)
+            ]
+            if benchmark_vcf_loc:
+                build_graph_cmd.extend(["--vcf_input", os.path.abspath(benchmark_vcf_loc)])
+                if vcf_ins_aln_paf is not None:
+                    build_graph_cmd.extend(["--alt", os.path.abspath(vcf_ins_aln_paf)])
+            else:
+                build_graph_cmd.extend(["--alt", PAF_UTG_LOC, "--original_paf_loc", ctg_paf, utg_paf])
+            subprocess_run(build_graph_cmd + EXTRA_02 + PROGRESS, check=True)
 
         if skype_start_at <= 11:
             subprocess_run([
                 "python", os.path.join(skype_folder_loc, "11_Ref_Outlier_Contig_Modify.py"),
-                PAF_LOC, CHR_FAI, f"{PAF_LOC}.ppc.paf", PREFIX,
-                "--alt", PAF_UTG_LOC
+                CHR_FAI, PPC_PAF_LOC, PREFIX,
             ], check=True)
 
         if skype_start_at <= 21:
@@ -334,7 +661,7 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
 
             subprocess_run([
                 "python", os.path.join(skype_folder_loc, "21_run_depth.py"),
-                f"{PAF_LOC}.ppc.paf", PREFIX,
+                PPC_PAF_LOC, PREFIX,
                 "--pandepth_loc", os.path.join(dep_folder, 'PanDepth', 'bin', 'pandepth'),
                 "-t", str(max(min(thread_lim, thread), 1))
             ] + PROGRESS, check=True)
@@ -342,13 +669,13 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
         if skype_start_at <= 22:
             subprocess_run([
                 "python", os.path.join(skype_folder_loc, "22_save_matrix.py"),
-                RCS_BED, f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
+                RCS_BED, PPC_PAF_LOC, MAIN_STAT_NORM_LOC,
                 TEL_BED, CHR_FAI, CYT_BED, PREFIX, "-t", THREAD
             ] + PROGRESS, check=True)
 
         if skype_start_at <= 23:
             subprocess_run([
-                "python", "23_run_nnls.py", f"{PAF_LOC}.ppc.paf",
+                "python", "23_run_nnls.py", PPC_PAF_LOC,
                 os.path.abspath(PREFIX), MAIN_STAT_NORM_LOC, RCS_BED, PAF_UTG_LOC, "-t", THREAD
             ], check=True, cwd=skype_folder_loc)
 
@@ -361,42 +688,51 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, dep
 
             subprocess_run([
                 "python", "-X", f"juliacall-threads={THREAD}", "-X", "juliacall-handle-signals=yes",
-                "24_cluster_weight.py", f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
+                "24_cluster_weight.py", PPC_PAF_LOC, MAIN_STAT_NORM_LOC,
                 TEL_BED, CHR_FAI, os.path.abspath(PREFIX), "-t", str(JULIA_THREAD)
             ], check=True, cwd=skype_folder_loc)
 
         if skype_start_at <= 30:
             subprocess_run([
                 "python", os.path.join(skype_folder_loc, "30_virtual_sky.py"),
-                f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
+                PPC_PAF_LOC, MAIN_STAT_NORM_LOC,
                 TEL_BED, CHR_FAI, PREFIX, CELL_LINE
             ], check=True)
 
         if skype_start_at <= 31:
             subprocess_run([
                 "python", os.path.join(skype_folder_loc, "31_depth_analysis.py"),
-                RCS_BED, f"{PAF_LOC}.ppc.paf", MAIN_STAT_NORM_LOC,
+                RCS_BED, PPC_PAF_LOC, MAIN_STAT_NORM_LOC,
                 TEL_BED, CHR_FAI, CYT_BED, PREFIX, "-t", THREAD
             ] + PROGRESS, check=True)
         
 
-def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_folder, is_progress, force, skype_force, run_skype_func, graph_depth, no_utg=False, skype_dir=None, option_02="", skype_start_at=0, print_args=False):
+def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_folder,
+             is_progress, force, skype_force, run_skype_func, graph_depth,
+             no_utg=False, skype_dir=None, option_02="", skype_start_at=0,
+             print_args=False, reference=REFERENCE_HS1, benchmark_vcf_loc=None,
+             alignasm_priority_ref=DEFAULT_ALIGNASM_PRIORITY_REF):
     # Main analysis function that orchestrates alignment and SKYPE execution.
     os.makedirs(PREFIX, exist_ok=True)
 
     if dep_folder is None:
         install_dependency(os.path.join(PREFIX, '99_dependency'), True)
         dep_folder = os.path.join(PREFIX, '99_dependency')
+    reference_bundle = resolve_reference_bundle(
+        dep_folder, reference, force, alignasm_priority_ref
+    )
 
     if skype_dir is None:
-        skype_dir = os.path.join(PREFIX, "30_skype")
+        skype_dir = os.path.join(PREFIX, skype_dir_name(reference_bundle))
     
-    alignasm_ref_loc = os.path.join(dep_folder, 'chm13v2.0_maskedY_noM.fa')
+    alignasm_ref_loc = reference_bundle.alignasm_ref
     alignasm_loc = os.path.join(dep_folder, 'alignasm', 'build', 'alignasm')
-    os.makedirs(os.path.join(PREFIX, '20_alignasm'), exist_ok=True)
+    alignasm_dir = os.path.join(PREFIX, alignasm_dir_name(reference_bundle))
+    os.makedirs(alignasm_dir, exist_ok=True)
 
-    alignasm_folder_ctg = os.path.join(PREFIX, '20_alignasm', f'{CELL_LINE}.ctg')
-    alignasm_folder_utg = os.path.join(PREFIX, '20_alignasm', f'{CELL_LINE}.utg')
+    alignasm_folder_ctg = os.path.join(alignasm_dir, f'{CELL_LINE}.ctg')
+    alignasm_folder_utg = os.path.join(alignasm_dir, f'{CELL_LINE}.utg')
+    alignasm_folder_vcf = os.path.join(alignasm_dir, f'{CELL_LINE}.vcf')
 
     if no_utg:
         alignasm_thread = thread
@@ -409,8 +745,49 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
             alignasm_thread = 1
             alignasm_worker_thread = 1
 
-    args_ctg = (alignasm_folder_ctg, alignasm_thread, contig_loc, alignasm_ref_loc, alignasm_loc, force)
-    args_utg = (alignasm_folder_utg, alignasm_thread, unitig_loc, alignasm_ref_loc, alignasm_loc, force)
+    args_ctg = (
+        alignasm_folder_ctg, alignasm_thread, contig_loc, alignasm_ref_loc,
+        alignasm_loc, force, alignasm_priority_ref
+    )
+    args_utg = (
+        alignasm_folder_utg, alignasm_thread, unitig_loc, alignasm_ref_loc,
+        alignasm_loc, force, alignasm_priority_ref
+    )
+
+    if benchmark_vcf_loc:
+        if no_utg:
+            ctg_paf, ctg_aln_paf = run_alignasm(
+                alignasm_folder_ctg, thread, contig_loc, alignasm_ref_loc,
+                alignasm_loc, force, alignasm_priority_ref
+            )
+            utg_paf, utg_aln_paf = ctg_paf, ctg_aln_paf
+        else:
+            utg_paf, utg_aln_paf = run_alignasm(
+                alignasm_folder_utg, thread, unitig_loc, alignasm_ref_loc,
+                alignasm_loc, force, alignasm_priority_ref
+            )
+            ctg_paf, ctg_aln_paf = utg_paf, utg_aln_paf
+
+        vcf_ins_aln_paf = None
+        vcf_ins_fa = os.path.join(alignasm_dir, f"{CELL_LINE}.vcf.ins.fa")
+        vcf_ins_count = write_vcf_ins_fasta(
+            benchmark_vcf_loc, vcf_ins_fa, VCF_INS_ALIGN_MIN_BP, force
+        )
+        if vcf_ins_count > 0:
+            _, vcf_ins_aln_paf = run_alignasm(
+                alignasm_folder_vcf, thread, vcf_ins_fa, alignasm_ref_loc,
+                alignasm_loc, force, alignasm_priority_ref
+            )
+
+        depth_loc = os.path.abspath(depth_loc)
+        return run_skype_func(
+            CELL_LINE, os.path.abspath(skype_dir), ctg_paf, ctg_aln_paf,
+            utg_paf, utg_aln_paf, depth_loc, thread, dep_folder, is_progress,
+            skype_force, graph_depth, option_02=option_02,
+            skype_start_at=skype_start_at, print_args=print_args,
+            benchmark_vcf_loc=benchmark_vcf_loc, reference_bundle=reference_bundle,
+            vcf_ins_aln_paf=vcf_ins_aln_paf
+        )
     
     if no_utg:
         with ThreadPoolExecutor(max_workers=alignasm_worker_thread) as executor:
@@ -418,7 +795,13 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
             ctg_paf, ctg_aln_paf = future_ctg.result()
 
         depth_loc = os.path.abspath(depth_loc)
-        return run_skype_func(CELL_LINE, os.path.abspath(skype_dir), ctg_paf, ctg_aln_paf, ctg_paf, ctg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force, graph_depth, option_02=option_02, skype_start_at=skype_start_at, print_args=print_args)
+        return run_skype_func(
+            CELL_LINE, os.path.abspath(skype_dir), ctg_paf, ctg_aln_paf,
+            ctg_paf, ctg_aln_paf, depth_loc, thread, dep_folder, is_progress,
+            skype_force, graph_depth, option_02=option_02,
+            skype_start_at=skype_start_at, print_args=print_args,
+            benchmark_vcf_loc=benchmark_vcf_loc, reference_bundle=reference_bundle
+        )
 
     else:
         with ThreadPoolExecutor(max_workers=alignasm_worker_thread) as executor:
@@ -429,7 +812,13 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
             utg_paf, utg_aln_paf = future_utg.result()
 
         depth_loc = os.path.abspath(depth_loc)
-        return run_skype_func(CELL_LINE, os.path.abspath(skype_dir), ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf, depth_loc, thread, dep_folder, is_progress, skype_force, graph_depth, option_02=option_02, skype_start_at=skype_start_at, print_args=print_args)
+        return run_skype_func(
+            CELL_LINE, os.path.abspath(skype_dir), ctg_paf, ctg_aln_paf,
+            utg_paf, utg_aln_paf, depth_loc, thread, dep_folder, is_progress,
+            skype_force, graph_depth, option_02=option_02,
+            skype_start_at=skype_start_at, print_args=print_args,
+            benchmark_vcf_loc=benchmark_vcf_loc, reference_bundle=reference_bundle
+        )
 
 def get_skype_parser():
     # Set up the command-line argument parser.
@@ -437,6 +826,92 @@ def get_skype_parser():
 
     # Define parser
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    def add_work_dir_arg(subparser):
+        subparser.add_argument("WORK_DIR", type=str, help="Working directory for pipeline")
+
+    def add_hifi_fastq_args(subparser):
+        subparser.add_argument(
+            "HIFI_FASTQ", type=str, help="Location of HiFi fastq file",
+            nargs=argparse.REMAINDER
+        )
+
+    def add_flye_input_args(subparser, fastq_help="Location of long-read fastq file(s)"):
+        subparser.add_argument(
+            "FLYE_TYPE", type=str,
+            help="Flye assembly read type (ex: pacbio-raw, nano-raw). See flye CLI docs."
+        )
+        subparser.add_argument(
+            "LONG_READ_FASTQ", type=str,
+            help=fastq_help, nargs="+"
+        )
+
+    def add_common_pipeline_args(subparser, include_progress=False):
+        subparser.add_argument("-t", "--thread", type=int, help="Number of thread", default=1)
+        subparser.add_argument("-p", "--prefix", type=str, help="Prefix for pipeline", default="SKYPE")
+        if include_progress:
+            subparser.add_argument("--progress", help="Show progress bar", action='store_true')
+        subparser.add_argument(
+            "--dependency_loc", type=str,
+            help="SKYPE dependency folder location. If no value is specified, it will be installed automatically"
+        )
+        subparser.add_argument(
+            "--preprocess_force", help="Don't trust previous file for preprocess",
+            action='store_true'
+        )
+
+    def add_hifiasm_args(subparser):
+        subparser.add_argument(
+            "--hifiasm_args", type=str, default="",
+            help='Custom hifiasm args (single quoted string, e.g. --hifiasm_args="--ont --chem-c 0")'
+        )
+
+    def add_flye_option_args(subparser):
+        subparser.add_argument(
+            "--flye_args", type=str, default="",
+            help='Custom flye args (single quoted string, e.g. --flye_args="--min-overlap 5000")'
+        )
+        subparser.add_argument("--minimap2_preset", type=str, help="Minimap2 preset for long-read mapping")
+
+    def add_analysis_input_args(subparser):
+        subparser.add_argument("CONTIG", type=str, help="Contig fasta location")
+        subparser.add_argument("UNITIG", type=str, help="UNITIG fasta location")
+        subparser.add_argument("DEPTH_LOC", type=str, help="Depth result for Pandepth location")
+
+    def add_skype_args(subparser, include_skype_dir=False, include_start_controls=False):
+        subparser.add_argument("--skype_force", help="Don't trust previous file for SKYPE pipeline", action='store_true')
+        if include_skype_dir:
+            subparser.add_argument("--skype_dir", type=str, help="Output directory for SKYPE analysis")
+        subparser.add_argument("-d", "--graph_depth", help="Depth of breakend graph", type=int, default=4)
+        subparser.add_argument(
+            "--option_02", type=str, default="",
+            help='Extra args forwarded to 02_Build_Breakend_Graph_Limited.py, e.g. "--variant_mode"'
+        )
+        if include_start_controls:
+            subparser.add_argument(
+                "--skype_start_at", type=int, default=0,
+                help='Start SKYPE pipeline from the given stage number (e.g., 23 to start at 23_run_nnls.py). Stages with smaller numbers are skipped.'
+            )
+            subparser.add_argument(
+                "--print_args", help="Print SKYPE subprocess commands instead of executing them",
+                action='store_true'
+            )
+
+    def add_reference_args(subparser):
+        subparser.add_argument(
+            "--reference", choices=[REFERENCE_HS1, REFERENCE_HG38],
+            default=REFERENCE_HS1,
+            help="Reference build for alignment/depth/SKYPE resources"
+        )
+        subparser.add_argument(
+            "--benchmark_vcf_loc", type=str,
+            help="Benchmark VCF input; enables SKYPE VCF input mode"
+        )
+        subparser.add_argument(
+            "--alignasm_priority_ref", type=str,
+            default=DEFAULT_ALIGNASM_PRIORITY_REF,
+            help="Reference contig name that alignasm should hard-prioritize"
+        )
     
 
     parser_hifi_prepro = subparsers.add_parser(
@@ -445,75 +920,27 @@ def get_skype_parser():
         usage="%(prog)s [options] WORK_DIR HIFI_FASTQ [HIFI_FASTQ ...]",
     )
 
-    parser_hifi_prepro.add_argument("WORK_DIR", type=str, help="Working directory for pipeline")
-
-    parser_hifi_prepro.add_argument("HIFI_FASTQ", type=str, help="Location of HiFi fastq file", nargs=argparse.REMAINDER)
-
-    parser_hifi_prepro.add_argument("-t", "--thread", type=int, help="Number of thread", default=1)
-
-    parser_hifi_prepro.add_argument("-p", "--prefix", type=str, help="Prefix for pipeline", default="SKYPE")
-
-    parser_hifi_prepro.add_argument("--dependency_loc", type=str, help="SKYPE dependency folder location. If no value is specified, it will be installed automatically")
-
-    parser_hifi_prepro.add_argument("--preprocess_force", help="Don't trust previous file for preprocess", action='store_true')
-
-    parser_hifi_prepro.add_argument("--hifiasm_args", type=str, default="", help="Custom hifiasm args (single quoted string, e.g. --hifiasm_args=\"--ont --chem-c 0\")")
+    add_work_dir_arg(parser_hifi_prepro)
+    add_hifi_fastq_args(parser_hifi_prepro)
+    add_common_pipeline_args(parser_hifi_prepro)
+    add_hifiasm_args(parser_hifi_prepro)
 
 
     parser_flye_prepro = subparsers.add_parser("preprocess_flye", help="Flye preprocessing for SKYPE pipeline")
 
-    parser_flye_prepro.add_argument("WORK_DIR", type=str, help="Working directory for pipeline")
-    
-    parser_flye_prepro.add_argument("FLYE_TYPE", type=str, help="Flye assembly read type (ex: pacbio-raw, nano-raw). See flye CLI docs.")
-
-    parser_flye_prepro.add_argument("LONG_READ_FASTQ", type=str, help="Location of long-read fastq file", nargs="+")
-
-    parser_flye_prepro.add_argument("-t", "--thread", type=int, help="Number of thread", default=1)
-
-    parser_flye_prepro.add_argument("-p", "--prefix", type=str, help="Prefix for pipeline", default="SKYPE")
-
-    parser_flye_prepro.add_argument("--dependency_loc", type=str, help="SKYPE dependency folder location. If no value is specified, it will be installed automatically")
-
-    parser_flye_prepro.add_argument("--preprocess_force", help="Don't trust previous file for preprocess", action='store_true')
-
-    parser_flye_prepro.add_argument("--flye_args", type=str, default="", help="Custom flye args (single quoted string, e.g. --flye_args=\"--min-overlap 5000\")")
-
-    parser_flye_prepro.add_argument("--minimap2_preset", type=str, help="Minimap2 preset for long-read mapping")
+    add_work_dir_arg(parser_flye_prepro)
+    add_flye_input_args(parser_flye_prepro, fastq_help="Location of long-read fastq file")
+    add_common_pipeline_args(parser_flye_prepro)
+    add_flye_option_args(parser_flye_prepro)
     
 
     parser_anl = subparsers.add_parser("analysis", help="Analysis cancer cell line karyotype using contig")
 
-    parser_anl.add_argument("WORK_DIR", type=str, help="Working directory for pipeline")
-
-    parser_anl.add_argument("CONTIG", type=str, help="Contig fasta location")
-
-    parser_anl.add_argument("UNITIG", type=str, help="UNITIG fasta location")
-
-    parser_anl.add_argument("DEPTH_LOC", type=str, help="Depth result for Pandepth location")
-
-    parser_anl.add_argument("-t", "--thread", type=int, help="Number of thread", default=1)
-
-    parser_anl.add_argument("-p", "--prefix", type=str, help="Prefix for pipeline", default="SKYPE")
-
-    parser_anl.add_argument("--progress", help="Show progress bar", action='store_true')
-
-    parser_anl.add_argument("--dependency_loc", type=str, help="SKYPE dependency folder location. If no value is specified, it will be installed automatically")
-
-    parser_anl.add_argument("--preprocess_force", help="Don't trust previous file for preprocess", action='store_true')
-
-    parser_anl.add_argument("--skype_force", help="Don't trust previous file for SKYPE pipeline", action='store_true')
-
-    parser_anl.add_argument("--skype_dir", type=str, help="Output directory for SKYPE analysis")
-
-    parser_anl.add_argument("-d", "--graph_depth", help="Depth of breakend graph", type=int, default=4)
-
-    parser_anl.add_argument("--option_02", type=str, default="",
-                            help='Extra args forwarded to 02_Build_Breakend_Graph_Limited.py, e.g. "--variant_mode"')
-
-    parser_anl.add_argument("--skype_start_at", type=int, default=0,
-                            help='Start SKYPE pipeline from the given stage number (e.g., 23 to start at 23_run_nnls.py). Stages with smaller numbers are skipped.')
-
-    parser_anl.add_argument("--print_args", help="Print SKYPE subprocess commands instead of executing them", action='store_true')
+    add_work_dir_arg(parser_anl)
+    add_analysis_input_args(parser_anl)
+    add_common_pipeline_args(parser_anl, include_progress=True)
+    add_skype_args(parser_anl, include_skype_dir=True, include_start_controls=True)
+    add_reference_args(parser_anl)
 
     parser_dep = subparsers.add_parser("install_dependency", help="Hifi preprocessing for SKYPE pipeline")
 
@@ -533,58 +960,22 @@ def get_skype_parser():
         usage="%(prog)s [options] WORK_DIR HIFI_FASTQ [HIFI_FASTQ ...]",
     )
 
-    parser_run.add_argument("WORK_DIR", type=str, help="Working directory for pipeline")
-
-    parser_run.add_argument("HIFI_FASTQ", type=str, help="Location of HiFi fastq file", nargs=argparse.REMAINDER)
-
-    parser_run.add_argument("-t", "--thread", type=int, help="Number of thread", default=1)
-
-    parser_run.add_argument("-p", "--prefix", type=str, help="Prefix for pipeline", default="SKYPE")
-
-    parser_run.add_argument("--progress", help="Show progress bar", action='store_true')
-
-    parser_run.add_argument("--dependency_loc", type=str, help="SKYPE dependency folder location. If no value is specified, it will be installed automatically")
-
-    parser_run.add_argument("--preprocess_force", help="Don't trust previous file for preprocess", action='store_true')
-
-    parser_run.add_argument("--skype_force", help="Don't trust previous file for SKYPE pipeline", action='store_true')
-
-    parser_run.add_argument("-d", "--graph_depth", help="Depth of breakend graph", type=int, default=4)
-
-    parser_run.add_argument("--option_02", type=str, default="",
-                            help='Extra args forwarded to 02_Build_Breakend_Graph_Limited.py, e.g. "--variant_mode"')
-
-    parser_run.add_argument("--hifiasm_args", type=str, default="", help="Custom hifiasm args (single quoted string, e.g. --hifiasm_args=\"--ont --chem-c 0\")")
+    add_work_dir_arg(parser_run)
+    add_hifi_fastq_args(parser_run)
+    add_common_pipeline_args(parser_run, include_progress=True)
+    add_skype_args(parser_run)
+    add_hifiasm_args(parser_run)
+    add_reference_args(parser_run)
 
     
     parser_run_flye = subparsers.add_parser("run_flye", help="Pipeline for cancer long-read sequencing data using Flye")
 
-    parser_run_flye.add_argument("WORK_DIR", type=str, help="Working directory for pipeline")
-
-    parser_run_flye.add_argument("FLYE_TYPE", type=str, help="Flye assembly read type (ex: pacbio-raw, nano-raw). See flye CLI docs.")
-
-    parser_run_flye.add_argument("LONG_READ_FASTQ", type=str, help="Location of long-read fastq file(s)", nargs="+")
-
-    parser_run_flye.add_argument("-t", "--thread", type=int, help="Number of thread", default=1)
-
-    parser_run_flye.add_argument("-p", "--prefix", type=str, help="Prefix for pipeline", default="SKYPE")
-
-    parser_run_flye.add_argument("--progress", help="Show progress bar", action='store_true')
-
-    parser_run_flye.add_argument("--dependency_loc", type=str, help="SKYPE dependency folder location. If no value is specified, it will be installed automatically")
-
-    parser_run_flye.add_argument("--preprocess_force", help="Don't trust previous file for preprocess", action='store_true')
-
-    parser_run_flye.add_argument("--skype_force", help="Don't trust previous file for SKYPE pipeline", action='store_true')
-
-    parser_run_flye.add_argument("-d", "--graph_depth", help="Depth of breakend graph", type=int, default=4)
-
-    parser_run_flye.add_argument("--option_02", type=str, default="",
-                                 help='Extra args forwarded to 02_Build_Breakend_Graph_Limited.py, e.g. "--variant_mode"')
-
-    parser_run_flye.add_argument("--flye_args", type=str, default="", help="Custom flye args (single quoted string, e.g. --flye_args=\"--min-overlap 5000\")")
-
-    parser_run_flye.add_argument("--minimap2_preset", type=str, help="Minimap2 preset for long-read mapping")
+    add_work_dir_arg(parser_run_flye)
+    add_flye_input_args(parser_run_flye)
+    add_common_pipeline_args(parser_run_flye, include_progress=True)
+    add_skype_args(parser_run_flye)
+    add_flye_option_args(parser_run_flye)
+    add_reference_args(parser_run_flye)
 
     return parser
 
@@ -605,6 +996,8 @@ def main():
     # Main function to parse arguments and execute the corresponding command.
     parser = get_skype_parser()
     args = parser.parse_args()
+    if getattr(args, "reference", REFERENCE_HS1) == REFERENCE_HG38 and not getattr(args, "benchmark_vcf_loc", None):
+        parser.error("--reference hg38 is currently supported only with --benchmark_vcf_loc")
 
     if args.command == "preprocess_hifi":
         if not args.HIFI_FASTQ:
@@ -615,31 +1008,64 @@ def main():
     elif args.command == "update_dependency":
         update_dependency(args.dependency_loc)
     elif args.command == "analysis":
-        analysis(args.prefix, args.WORK_DIR, args.CONTIG, args.UNITIG, args.DEPTH_LOC, args.thread, args.dependency_loc, args.progress, args.preprocess_force, args.skype_force, run_skype, args.graph_depth, skype_dir=args.skype_dir, option_02=args.option_02, skype_start_at=args.skype_start_at, print_args=args.print_args)
+        analysis(
+            args.prefix, args.WORK_DIR, args.CONTIG, args.UNITIG, args.DEPTH_LOC,
+            args.thread, args.dependency_loc, args.progress, args.preprocess_force,
+            args.skype_force, run_skype, args.graph_depth, skype_dir=args.skype_dir,
+            option_02=args.option_02, skype_start_at=args.skype_start_at,
+            print_args=args.print_args, reference=args.reference,
+            benchmark_vcf_loc=args.benchmark_vcf_loc,
+            alignasm_priority_ref=args.alignasm_priority_ref
+        )
     elif args.command == 'run_hifi':
         if not args.HIFI_FASTQ:
             parser.error("run_hifi: at least one HIFI_FASTQ is required")
-        ctg_loc, utg_loc = hifi_preprocess(args.prefix, args.WORK_DIR, args.HIFI_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.hifiasm_args)
+        ctg_loc, utg_loc = hifi_preprocess(
+            args.prefix, args.WORK_DIR, args.HIFI_FASTQ, args.thread,
+            args.dependency_loc, args.preprocess_force, args.hifiasm_args,
+            reference=args.reference,
+            alignasm_priority_ref=args.alignasm_priority_ref
+        )
         
-        depth_loc = os.path.join(args.WORK_DIR, '01_depth', f'{args.prefix}.win.stat.gz')
+        depth_loc = os.path.join(args.WORK_DIR, depth_dir_name(args.reference), f'{args.prefix}.win.stat.gz')
         if args.dependency_loc is None:
             dep_folder = os.path.join(args.WORK_DIR, '99_dependency')
         else:
             dep_folder = args.dependency_loc
-        analysis(args.prefix, args.WORK_DIR, ctg_loc, utg_loc, depth_loc, args.thread, dep_folder, args.progress, args.preprocess_force, args.skype_force, run_skype, args.graph_depth, option_02=args.option_02)
+        analysis(
+            args.prefix, args.WORK_DIR, ctg_loc, utg_loc, depth_loc, args.thread,
+            dep_folder, args.progress, args.preprocess_force, args.skype_force,
+            run_skype, args.graph_depth, option_02=args.option_02,
+            reference=args.reference, benchmark_vcf_loc=args.benchmark_vcf_loc,
+            alignasm_priority_ref=args.alignasm_priority_ref
+        )
     elif args.command == 'preprocess_flye':
         flye_preprocess(args.prefix, args.WORK_DIR, args.LONG_READ_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.FLYE_TYPE, args.flye_args, args.minimap2_preset)
     elif args.command == 'run_flye':
-        ctg_loc, utg_loc = flye_preprocess(args.prefix, args.WORK_DIR, args.LONG_READ_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.FLYE_TYPE, args.flye_args, args.minimap2_preset)
-        depth_loc = os.path.join(args.WORK_DIR, '01_depth', f'{args.prefix}.win.stat.gz')
+        ctg_loc, utg_loc = flye_preprocess(
+            args.prefix, args.WORK_DIR, args.LONG_READ_FASTQ, args.thread,
+            args.dependency_loc, args.preprocess_force, args.FLYE_TYPE,
+            args.flye_args, args.minimap2_preset, reference=args.reference,
+            alignasm_priority_ref=args.alignasm_priority_ref
+        )
+        depth_loc = os.path.join(args.WORK_DIR, depth_dir_name(args.reference), f'{args.prefix}.win.stat.gz')
 
         if args.dependency_loc is None:
             dep_folder = os.path.join(args.WORK_DIR, '99_dependency')
         else:
             dep_folder = args.dependency_loc
 
-        analysis(args.prefix, args.WORK_DIR, ctg_loc, utg_loc, depth_loc, args.thread, dep_folder, args.progress, args.preprocess_force, args.skype_force, run_skype, args.graph_depth, no_utg=True, option_02=args.option_02)
+        analysis(
+            args.prefix, args.WORK_DIR, ctg_loc, utg_loc, depth_loc, args.thread,
+            dep_folder, args.progress, args.preprocess_force, args.skype_force,
+            run_skype, args.graph_depth, no_utg=True, option_02=args.option_02,
+            reference=args.reference, benchmark_vcf_loc=args.benchmark_vcf_loc,
+            alignasm_priority_ref=args.alignasm_priority_ref
+        )
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except FileNotFoundError as exc:
+        raise SystemExit(f"{os.path.basename(__file__)}: error: {exc}") from None
