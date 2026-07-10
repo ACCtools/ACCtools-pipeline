@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Build a custom hg38 FASTA for telomere-aware mapping.
+"""Build a custom hg38 FASTA for chromosome-only mapping.
 
 Default behavior:
   - read ./hg38.fa
-  - keep only chr1-22, chrX, chrY, and chrM
+  - keep contigs listed in target_contig_fai
   - mask chrY PAR1/PAR2 to N using GRCh38/UCSC coordinates
-  - append one 100re kb telomeric-repeat decoy contig
 
 The script streams the input FASTA, so it is safe for multi-GB references.
 """
@@ -21,18 +20,11 @@ from typing import Iterable, TextIO
 
 
 DEFAULT_INPUT = Path("hg38.fa")
-DEFAULT_OUTPUT = Path("hg38.custom.primary.telomere_decoy.ypar_masked.fa")
+DEFAULT_OUTPUT = Path("hg38.custom.primary.ypar_masked.fa")
 DEFAULT_PAR_INTERVALS = (
     (10_001, 2_781_479),
     (56_887_903, 57_217_415),
 )
-
-CANONICAL_HG38_CONTIGS = {
-    *(f"chr{i}" for i in range(1, 23)),
-    "chrX",
-    "chrY",
-    "chrM",
-}
 
 
 class DefaultsFormatter(argparse.ArgumentDefaultsHelpFormatter):
@@ -49,7 +41,6 @@ class Summary:
     dropped_non_primary_records: int = 0
     y_par_bases_covered: int = 0
     y_par_bases_changed_to_n: int = 0
-    telomere_decoy_bases: int = 0
 
 
 def open_text(path: Path, mode: str) -> TextIO:
@@ -76,8 +67,25 @@ def parse_interval(value: str) -> tuple[int, int]:
     return start, end
 
 
-def keep_contig(name: str, include_all: bool, excluded_contigs: set[str]) -> bool:
-    return (include_all or name in CANONICAL_HG38_CONTIGS) and name not in excluded_contigs
+def read_fai_contigs(path: Path) -> set[str]:
+    contigs: set[str] = set()
+    with path.open(encoding="ascii") as fai:
+        for line in fai:
+            if not line.strip():
+                continue
+            name, *_ = line.rstrip("\n").split("\t")
+            contigs.add(name)
+    if not contigs:
+        raise SystemExit(f"no contigs found in FAI: {path}")
+    return contigs
+
+
+def keep_contig(
+    name: str,
+    included_contigs: set[str],
+    excluded_contigs: set[str],
+) -> bool:
+    return name in included_contigs and name not in excluded_contigs
 
 
 def mask_line(
@@ -118,31 +126,6 @@ def mask_line(
     return "".join(chars), covered, changed
 
 
-def write_telomere_decoy(
-    out_handle: TextIO,
-    *,
-    name: str,
-    motif: str,
-    length: int,
-    line_width: int,
-) -> int:
-    if length <= 0:
-        return 0
-    if not motif:
-        raise ValueError("telomere motif must not be empty")
-    if line_width <= 0:
-        raise ValueError("line width must be positive")
-
-    repeat_count = (length + len(motif) - 1) // len(motif)
-    seq = (motif.upper() * repeat_count)[:length]
-
-    out_handle.write(f">{name}\n")
-    for offset in range(0, length, line_width):
-        out_handle.write(seq[offset : offset + line_width])
-        out_handle.write("\n")
-    return length
-
-
 def process_fasta(args: argparse.Namespace) -> Summary:
     input_path = args.input_fasta
     output_path = args.output_fasta
@@ -156,6 +139,7 @@ def process_fasta(args: argparse.Namespace) -> Summary:
     skip_record = False
     mask_current_record = False
     seq_pos_0 = 0
+    included_contigs = read_fai_contigs(args.target_contig_fai)
     excluded_contigs = set(args.exclude_contig or [])
 
     with open_text(input_path, "rt") as in_handle, open_text(output_path, "wt") as out_handle:
@@ -165,7 +149,7 @@ def process_fasta(args: argparse.Namespace) -> Summary:
                 current_name = header.split()[0] if header else ""
                 keep_record = keep_contig(
                     current_name,
-                    include_all=args.include_all,
+                    included_contigs=included_contigs,
                     excluded_contigs=excluded_contigs,
                 )
 
@@ -201,35 +185,25 @@ def process_fasta(args: argparse.Namespace) -> Summary:
                 out_handle.write(raw_line if raw_line.endswith("\n") else raw_line + "\n")
             seq_pos_0 += len(seq)
 
-        if not args.no_telomere_decoy:
-            summary.telomere_decoy_bases = write_telomere_decoy(
-                out_handle,
-                name=args.telomere_name,
-                motif=args.telomere_motif,
-                length=args.telomere_length,
-                line_width=args.line_width,
-            )
-            summary.kept_records += 1
-
     return summary
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Create primary-contig hg38 with chrY PAR masked and a telomere decoy.",
+        description="Create custom hg38 from a target contig FAI with optional chrY PAR masking.",
         formatter_class=DefaultsFormatter,
     )
     parser.add_argument("input_fasta", nargs="?", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("output_fasta", nargs="?", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument(
+        "target_contig_fai",
+        type=Path,
+        help="FAI whose first-column contig names define the chromosome records to keep",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="overwrite output FASTA if it already exists",
-    )
-    parser.add_argument(
-        "--include-all",
-        action="store_true",
-        help="keep all input contigs instead of only chr1-22, chrX, chrY, and chrM",
     )
     parser.add_argument(
         "--exclude-contig",
@@ -258,33 +232,6 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="START-END",
         help="1-based closed chrY interval to mask; may be supplied multiple times",
     )
-    parser.add_argument(
-        "--no-telomere-decoy",
-        action="store_true",
-        help="do not append the telomeric-repeat decoy contig",
-    )
-    parser.add_argument(
-        "--telomere-name",
-        default="telomere_decoy_TTAGGG_100k",
-        help="FASTA record name for the appended telomere decoy",
-    )
-    parser.add_argument(
-        "--telomere-motif",
-        default="TTAGGG",
-        help="repeat motif used for the telomere decoy",
-    )
-    parser.add_argument(
-        "--telomere-length",
-        type=int,
-        default=100_000,
-        help="length of the telomere decoy contig in bases",
-    )
-    parser.add_argument(
-        "--line-width",
-        type=int,
-        default=50,
-        help="line width for the appended decoy sequence",
-    )
     return parser
 
 
@@ -304,7 +251,6 @@ def main() -> int:
                 f"dropped non-primary records: {summary.dropped_non_primary_records}",
                 f"chrY PAR bases covered: {summary.y_par_bases_covered}",
                 f"chrY PAR bases changed to N: {summary.y_par_bases_changed_to_n}",
-                f"telomere decoy bases appended: {summary.telomere_decoy_bases}",
             ]
         ),
         file=sys.stderr,

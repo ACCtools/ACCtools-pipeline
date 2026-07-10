@@ -24,10 +24,9 @@ HS1_SKYPE_DIR = "30_skype"
 HG38_SKYPE_DIR = "31_skype_hg38"
 
 # Hg38 const
-DEFAULT_ALIGNASM_PRIORITY_REF = "telomere_decoy"
 HG38_URL = "https://hgdownload.soe.ucsc.edu/goldenpath/hg38/bigZips/hg38.fa.gz"
 HG38_SOURCE_FA = "hg38.fa"
-HG38_ALIGNASM_FA = "hg38.custom.primary.telomere_decoy.ypar_masked.fa"
+HG38_ALIGNASM_FA = "hg38.custom.primary.ypar_masked_noM.fa"
 HG38_DEPTH_FA = "hg38.custom.primary.ypar_unmasked.fa"
 HG38_PUBLIC_FAI = "hg38.fa.fai"
 HG38_ACEN_BED = "hg38_acen.bed"
@@ -197,30 +196,6 @@ def ensure_fai(fasta_path, force):
         subprocess.run(["samtools", "faidx", fasta_path], check=True)
     return fai_path
 
-def get_fai_contig_length(fai_path, contig_name):
-    with open(fai_path, encoding="ascii") as fai:
-        for line in fai:
-            if not line.strip():
-                continue
-            name, length, *_ = line.rstrip("\n").split("\t")
-            if name == contig_name:
-                return int(length)
-    raise FileNotFoundError(
-        f"Missing hg38 telomere decoy for --alignasm_priority_ref {contig_name!r}: {fai_path}"
-    )
-
-def write_hg38_telomere_bed(alignasm_fai, out_bed, decoy_name, force):
-    decoy_length = get_fai_contig_length(alignasm_fai, decoy_name)
-    expected = f"{decoy_name}\t0\t{decoy_length}\n"
-    if os.path.isfile(out_bed) and not force:
-        with open(out_bed, encoding="ascii") as bed:
-            if bed.read() == expected:
-                return out_bed
-
-    with open(out_bed, "w", encoding="ascii") as out:
-        out.write(expected)
-    return out_bed
-
 def ensure_hg38_source(dep_folder, force):
     source_fa = os.path.join(dep_folder, HG38_SOURCE_FA)
     source_gz = f"{source_fa}.gz"
@@ -232,20 +207,20 @@ def ensure_hg38_source(dep_folder, force):
     subprocess.run(["pigz", "-d", "-f", source_gz], check=True)
     return source_fa
 
-def run_make_custom_hg38(input_fa, output_fa, force, extra_args=None):
+def run_make_custom_hg38(input_fa, output_fa, target_contig_fai, force, extra_args=None):
     if os.path.isfile(output_fa) and not force:
         return output_fa
 
     cmd = [
         "python3", os.path.join(SCRIPT_DIR, "make_custom_hg38.py"),
-        input_fa, output_fa, "--force"
+        input_fa, output_fa, target_contig_fai, "--force"
     ]
     if extra_args:
         cmd.extend(extra_args)
     subprocess.run(cmd, check=True)
     return output_fa
 
-def prepare_hg38_references(dep_folder, force, telomere_decoy_name=DEFAULT_ALIGNASM_PRIORITY_REF):
+def prepare_hg38_references(dep_folder, force):
     public_data = os.path.join(dep_folder, "SKYPE", "public_data")
     os.makedirs(public_data, exist_ok=True)
     public_fai = os.path.join(public_data, HG38_PUBLIC_FAI)
@@ -253,6 +228,7 @@ def prepare_hg38_references(dep_folder, force, telomere_decoy_name=DEFAULT_ALIGN
     acen_bed = os.path.join(public_data, HG38_ACEN_BED)
     cyt_bed = os.path.join(public_data, HG38_CYTOBAND_BED)
     require_file(public_fai, "hg38 FAI")
+    require_file(tel_bed, "hg38 telomere BED")
     require_file(acen_bed, "hg38 acen BED")
     require_file(cyt_bed, "hg38 cytoband BED")
 
@@ -270,17 +246,15 @@ def prepare_hg38_references(dep_folder, force, telomere_decoy_name=DEFAULT_ALIGN
                 for contig in HG38_ALIGNASM_EXCLUDE_CONTIGS
                 for arg in ("--exclude-contig", contig)
             ]
-            exclude_args.extend(["--telomere-name", telomere_decoy_name])
-            run_make_custom_hg38(source_fa, alignasm_fa, force, exclude_args)
+            run_make_custom_hg38(source_fa, alignasm_fa, public_fai, force, exclude_args)
         if needs_depth_fa:
             run_make_custom_hg38(
-                source_fa, depth_fa, force,
-                ["--no-mask-y-par", "--no-telomere-decoy"]
+                source_fa, depth_fa, public_fai, force,
+                ["--no-mask-y-par"]
             )
 
-    alignasm_fai = ensure_fai(alignasm_fa, force)
+    ensure_fai(alignasm_fa, force)
     ensure_fai(depth_fa, force)
-    write_hg38_telomere_bed(alignasm_fai, tel_bed, telomere_decoy_name, force)
 
     return ReferenceBundle(
         name=REFERENCE_HG38,
@@ -298,14 +272,13 @@ def resolve_reference_bundle(
     dep_folder,
     reference,
     force=False,
-    telomere_decoy_name=DEFAULT_ALIGNASM_PRIORITY_REF,
 ):
     dep_folder = os.path.abspath(dep_folder)
     skype_folder_loc = os.path.join(dep_folder, "SKYPE")
     public_data = os.path.join(skype_folder_loc, "public_data")
 
     if reference == REFERENCE_HG38:
-        return prepare_hg38_references(dep_folder, force, telomere_decoy_name)
+        return prepare_hg38_references(dep_folder, force)
     if reference != REFERENCE_HS1:
         raise ValueError(f"Unsupported reference: {reference}")
 
@@ -353,7 +326,7 @@ def sort_sam_and_index_bam_with_samtools(sam_file, sorted_bam_file, thread, forc
 
 def hifi_preprocess(
     CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, hifiasm_args,
-    reference=REFERENCE_HS1, alignasm_priority_ref=DEFAULT_ALIGNASM_PRIORITY_REF,
+    reference=REFERENCE_HS1,
 ):
     # Preprocessing pipeline for HiFi data using hifiasm.
     depth_window = 100 * 1000
@@ -362,9 +335,7 @@ def hifi_preprocess(
     if dep_folder is None:
         install_dependency(os.path.join(PREFIX, '99_dependency'), True)
         dep_folder = os.path.join(PREFIX, '99_dependency')
-    reference_bundle = resolve_reference_bundle(
-        dep_folder, reference, force, alignasm_priority_ref
-    )
+    reference_bundle = resolve_reference_bundle(dep_folder, reference, force)
 
     THREAD = str(thread)
     hifiasm_args = normalize_extra_args(hifiasm_args)
@@ -428,7 +399,6 @@ def hifi_preprocess(
 def flye_preprocess(
     CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, flye_type,
     flye_args, minimap2_preset, reference=REFERENCE_HS1,
-    alignasm_priority_ref=DEFAULT_ALIGNASM_PRIORITY_REF,
 ):
     # Preprocessing pipeline for long-read data using Flye.
     minimap2_preset_flye = get_minimap2_preset_from_flye(flye_type)
@@ -443,9 +413,7 @@ def flye_preprocess(
     if dep_folder is None:
         install_dependency(os.path.join(PREFIX, '99_dependency'), True)
         dep_folder = os.path.join(PREFIX, '99_dependency')
-    reference_bundle = resolve_reference_bundle(
-        dep_folder, reference, force, alignasm_priority_ref
-    )
+    reference_bundle = resolve_reference_bundle(dep_folder, reference, force)
 
     THREAD = str(thread)
     flye_args = normalize_extra_args(flye_args)
@@ -545,7 +513,7 @@ def update_dependency(dep_folder):
 def is_nonempty_file(path):
     return os.path.isfile(path) and os.path.getsize(path) > 0
 
-def run_alignasm(PREFIX_PATH, thread, fa_loc, ref_loc, ALIGNASM_LOC, force, priority_ref=None):
+def run_alignasm(PREFIX_PATH, thread, fa_loc, ref_loc, ALIGNASM_LOC, force):
     # Run the alignasm tool for sequence alignment.
     THREAD = str(thread)
 
@@ -583,8 +551,6 @@ def run_alignasm(PREFIX_PATH, thread, fa_loc, ref_loc, ALIGNASM_LOC, force, prio
         ]
         if is_nonempty_file(alt_paf_file):
             alignasm_cmd.extend(["-a", alt_paf_file])
-        if priority_ref:
-            alignasm_cmd.extend(["--priority_ref", priority_ref])
         subprocess.run(alignasm_cmd, check=True)
 
     return tar_paf_tuple
@@ -615,7 +581,11 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf,
     MAIN_STAT_NORM_LOC = depth_loc if REF_STAT_LOC is None else depth_loc.replace('.win.stat.gz', '_normalized.win.stat.gz')
     PAF_LOC = ctg_aln_paf
     PAF_UTG_LOC = utg_aln_paf
-    PPC_PAF_LOC = os.path.join(PREFIX, "vcf_synthetic.paf.ppc.paf") if benchmark_vcf_loc else f"{PAF_LOC}.ppc.paf"
+    PPC_PAF_LOC = (
+        os.path.join(PREFIX, "vcf_synthetic.paf.ppc.paf")
+        if benchmark_vcf_loc
+        else os.path.join(PREFIX, f"{os.path.basename(PAF_LOC)}.ppc.paf")
+    )
     READ_BAM_LOC = os.path.join(os.path.dirname(depth_loc), f'{CELL_LINE}.bam')
     SORTED_READ_BAM_LOC = os.path.join(os.path.dirname(depth_loc), f'{CELL_LINE}.sorted.bam')
     if os.path.isfile(SORTED_READ_BAM_LOC):
@@ -710,17 +680,14 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf,
 def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_folder,
              is_progress, force, skype_force, run_skype_func, graph_depth,
              no_utg=False, skype_dir=None, option_02="", skype_start_at=0,
-             print_args=False, reference=REFERENCE_HS1, benchmark_vcf_loc=None,
-             alignasm_priority_ref=DEFAULT_ALIGNASM_PRIORITY_REF):
+             print_args=False, reference=REFERENCE_HS1, benchmark_vcf_loc=None):
     # Main analysis function that orchestrates alignment and SKYPE execution.
     os.makedirs(PREFIX, exist_ok=True)
 
     if dep_folder is None:
         install_dependency(os.path.join(PREFIX, '99_dependency'), True)
         dep_folder = os.path.join(PREFIX, '99_dependency')
-    reference_bundle = resolve_reference_bundle(
-        dep_folder, reference, force, alignasm_priority_ref
-    )
+    reference_bundle = resolve_reference_bundle(dep_folder, reference, force)
 
     if skype_dir is None:
         skype_dir = os.path.join(PREFIX, skype_dir_name(reference_bundle))
@@ -747,24 +714,24 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
 
     args_ctg = (
         alignasm_folder_ctg, alignasm_thread, contig_loc, alignasm_ref_loc,
-        alignasm_loc, force, alignasm_priority_ref
+        alignasm_loc, force
     )
     args_utg = (
         alignasm_folder_utg, alignasm_thread, unitig_loc, alignasm_ref_loc,
-        alignasm_loc, force, alignasm_priority_ref
+        alignasm_loc, force
     )
 
     if benchmark_vcf_loc:
         if no_utg:
             ctg_paf, ctg_aln_paf = run_alignasm(
                 alignasm_folder_ctg, thread, contig_loc, alignasm_ref_loc,
-                alignasm_loc, force, alignasm_priority_ref
+                alignasm_loc, force
             )
             utg_paf, utg_aln_paf = ctg_paf, ctg_aln_paf
         else:
             utg_paf, utg_aln_paf = run_alignasm(
                 alignasm_folder_utg, thread, unitig_loc, alignasm_ref_loc,
-                alignasm_loc, force, alignasm_priority_ref
+                alignasm_loc, force
             )
             ctg_paf, ctg_aln_paf = utg_paf, utg_aln_paf
 
@@ -776,7 +743,7 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
         if vcf_ins_count > 0:
             _, vcf_ins_aln_paf = run_alignasm(
                 alignasm_folder_vcf, thread, vcf_ins_fa, alignasm_ref_loc,
-                alignasm_loc, force, alignasm_priority_ref
+                alignasm_loc, force
             )
 
         depth_loc = os.path.abspath(depth_loc)
@@ -907,11 +874,6 @@ def get_skype_parser():
             "--benchmark_vcf_loc", type=str,
             help="Benchmark VCF input; enables SKYPE VCF input mode"
         )
-        subparser.add_argument(
-            "--alignasm_priority_ref", type=str,
-            default=DEFAULT_ALIGNASM_PRIORITY_REF,
-            help="Reference contig name that alignasm should hard-prioritize"
-        )
     
 
     parser_hifi_prepro = subparsers.add_parser(
@@ -996,8 +958,6 @@ def main():
     # Main function to parse arguments and execute the corresponding command.
     parser = get_skype_parser()
     args = parser.parse_args()
-    if getattr(args, "reference", REFERENCE_HS1) == REFERENCE_HG38 and not getattr(args, "benchmark_vcf_loc", None):
-        parser.error("--reference hg38 is currently supported only with --benchmark_vcf_loc")
 
     if args.command == "preprocess_hifi":
         if not args.HIFI_FASTQ:
@@ -1014,8 +974,7 @@ def main():
             args.skype_force, run_skype, args.graph_depth, skype_dir=args.skype_dir,
             option_02=args.option_02, skype_start_at=args.skype_start_at,
             print_args=args.print_args, reference=args.reference,
-            benchmark_vcf_loc=args.benchmark_vcf_loc,
-            alignasm_priority_ref=args.alignasm_priority_ref
+            benchmark_vcf_loc=args.benchmark_vcf_loc
         )
     elif args.command == 'run_hifi':
         if not args.HIFI_FASTQ:
@@ -1023,8 +982,7 @@ def main():
         ctg_loc, utg_loc = hifi_preprocess(
             args.prefix, args.WORK_DIR, args.HIFI_FASTQ, args.thread,
             args.dependency_loc, args.preprocess_force, args.hifiasm_args,
-            reference=args.reference,
-            alignasm_priority_ref=args.alignasm_priority_ref
+            reference=args.reference
         )
         
         depth_loc = os.path.join(args.WORK_DIR, depth_dir_name(args.reference), f'{args.prefix}.win.stat.gz')
@@ -1036,8 +994,7 @@ def main():
             args.prefix, args.WORK_DIR, ctg_loc, utg_loc, depth_loc, args.thread,
             dep_folder, args.progress, args.preprocess_force, args.skype_force,
             run_skype, args.graph_depth, option_02=args.option_02,
-            reference=args.reference, benchmark_vcf_loc=args.benchmark_vcf_loc,
-            alignasm_priority_ref=args.alignasm_priority_ref
+            reference=args.reference, benchmark_vcf_loc=args.benchmark_vcf_loc
         )
     elif args.command == 'preprocess_flye':
         flye_preprocess(args.prefix, args.WORK_DIR, args.LONG_READ_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.FLYE_TYPE, args.flye_args, args.minimap2_preset)
@@ -1045,8 +1002,7 @@ def main():
         ctg_loc, utg_loc = flye_preprocess(
             args.prefix, args.WORK_DIR, args.LONG_READ_FASTQ, args.thread,
             args.dependency_loc, args.preprocess_force, args.FLYE_TYPE,
-            args.flye_args, args.minimap2_preset, reference=args.reference,
-            alignasm_priority_ref=args.alignasm_priority_ref
+            args.flye_args, args.minimap2_preset, reference=args.reference
         )
         depth_loc = os.path.join(args.WORK_DIR, depth_dir_name(args.reference), f'{args.prefix}.win.stat.gz')
 
@@ -1059,8 +1015,7 @@ def main():
             args.prefix, args.WORK_DIR, ctg_loc, utg_loc, depth_loc, args.thread,
             dep_folder, args.progress, args.preprocess_force, args.skype_force,
             run_skype, args.graph_depth, no_utg=True, option_02=args.option_02,
-            reference=args.reference, benchmark_vcf_loc=args.benchmark_vcf_loc,
-            alignasm_priority_ref=args.alignasm_priority_ref
+            reference=args.reference, benchmark_vcf_loc=args.benchmark_vcf_loc
         )
 
 
