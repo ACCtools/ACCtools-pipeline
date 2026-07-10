@@ -581,11 +581,8 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf,
     MAIN_STAT_NORM_LOC = depth_loc if REF_STAT_LOC is None else depth_loc.replace('.win.stat.gz', '_normalized.win.stat.gz')
     PAF_LOC = ctg_aln_paf
     PAF_UTG_LOC = utg_aln_paf
-    PPC_PAF_LOC = (
-        os.path.join(PREFIX, "vcf_synthetic.paf.ppc.paf")
-        if benchmark_vcf_loc
-        else os.path.join(PREFIX, f"{os.path.basename(PAF_LOC)}.ppc.paf")
-    )
+    graph_paf_loc = PAF_UTG_LOC if benchmark_vcf_loc else PAF_LOC
+    PPC_PAF_LOC = os.path.join(PREFIX, f"{os.path.basename(graph_paf_loc)}.ppc.paf")
     READ_BAM_LOC = os.path.join(os.path.dirname(depth_loc), f'{CELL_LINE}.bam')
     SORTED_READ_BAM_LOC = os.path.join(os.path.dirname(depth_loc), f'{CELL_LINE}.sorted.bam')
     if os.path.isfile(SORTED_READ_BAM_LOC):
@@ -605,7 +602,6 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf,
 
         if skype_start_at <= 2:
             EXTRA_02 = shlex.split(option_02) if option_02 else []
-            graph_paf_loc = PAF_UTG_LOC if benchmark_vcf_loc else PAF_LOC
             build_graph_cmd = [
                 "python", os.path.join(skype_folder_loc, "02_Build_Breakend_Graph_Limited.py"),
                 graph_paf_loc, CHR_FAI, TEL_BED, RPT_BED, RCS_BED, MAIN_STAT_NORM_LOC, PREFIX, READ_BAM_LOC,
