@@ -43,7 +43,7 @@ stage. Multiple arguments must be placed in the same quoted string:
 
 ```bash
 python SKYPE.py analysis \
-  --option_02="--add_alt_ctg_simple --add_indel_graph" \
+  --option_02="--add_indel_graph" \
   <Working directory> <contig.fa> <unitig.fa> <depth.win.stat.gz>
 ```
 
@@ -52,7 +52,7 @@ The following public stage-02 arguments can be forwarded through
 
 | Argument | Default | Role and notes |
 | --- | --- | --- |
-| `--add_alt_ctg_simple` | Disabled | Rescues rearrangement candidates from primary contigs that were not otherwise retained. It trims telomere-like terminal chunks, ignores fragments up to 10 kbp, selects chromosomes covering 90% of the remaining span, and removes nearby duplicate same-direction chromosome changes. |
+| `--disable_alt_ctg_simple` | Not set (rescue enabled) | Disables the default rescue of rearrangement candidates from primary contigs that were not otherwise retained. The rescue trims telomere-like terminal chunks, ignores fragments up to 10 kbp, selects chromosomes covering 90% of the remaining span, and removes nearby duplicate same-direction chromosome changes. |
 | `--add_indel_graph` | Disabled | Adds selected depth-supported type-4 indel rescue edges to the graph without increasing its dimensions. In VCF mode, DEL, DUP, and indel-like BND events are eligible; INS events are excluded. |
 | `--skip_bam_analysis` | Disabled | Skips raw-read BAM validation of translocation candidates and the removal of raw-read-supported virtual-inversion candidates. Do not combine it with `--check_nclose_count`, because the requested VAF filter cannot run when BAM analysis is skipped. |
 | `--karyotype_mode` | Enabled | Selects the default karyotype-oriented mode with aggressive filtering. It is mutually exclusive with `--variant_mode`. |
