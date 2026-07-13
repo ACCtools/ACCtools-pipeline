@@ -1,10 +1,12 @@
 import os
+import filecmp
 import shlex
 import shutil
 import psutil
 import argparse
 import subprocess
 import re
+import tempfile
 from dataclasses import dataclass
 from typing import Optional
 
@@ -34,7 +36,7 @@ HG38_CYTOBAND_BED = "hg38_cytobands_allchrs.bed"
 HG38_TELOMERE_BED = "hg38_telomere.bed"
 HG38_ALIGNASM_EXCLUDE_CONTIGS = ("chrM",)
 
-VCF_INS_ALIGN_MIN_BP = 1000
+VCF_INS_MIN_SVLEN = 100_000
 VCF_INS_SEQUENCE_INFO_KEYS = ("INSSEQ", "SVINSSEQ", "SEQ")
 
 
@@ -108,6 +110,20 @@ def parse_vcf_info(info_text):
             info[item] = True
     return info
 
+def parse_vcf_optional_int(value):
+    if value in (None, True, ""):
+        return None
+    try:
+        return int(float(str(value).split(",", 1)[0]))
+    except ValueError:
+        return None
+
+def vcf_ins_effective_svlen(info, caller=None):
+    svlen = parse_vcf_optional_int(info.get("SVLEN"))
+    if svlen is None and caller == "nanomonsv":
+        svlen = parse_vcf_optional_int(info.get("SVINSLEN"))
+    return abs(svlen) if svlen is not None else None
+
 def clean_vcf_sequence(value):
     if value in (None, True, ""):
         return None
@@ -140,11 +156,19 @@ def extract_vcf_ins_sequence(ref, alt, info):
             return seq
     return None
 
-def collect_vcf_ins_sequences(vcf_path, min_bp=VCF_INS_ALIGN_MIN_BP):
+def collect_vcf_ins_sequences(
+    vcf_path,
+    min_svlen=VCF_INS_MIN_SVLEN,
+):
     records = []
+    caller = None
     with open(vcf_path, "rt", encoding="ascii") as vcf:
         for line_no, line in enumerate(vcf, start=1):
             line = line.rstrip("\n")
+            if line.startswith("##source="):
+                source = line.split("=", 1)[1].strip().lower()
+                if source.startswith("nanomonsv-") or source.startswith("nanomonsv"):
+                    caller = "nanomonsv"
             if not line or line.startswith("#"):
                 continue
             cols = line.split("\t")
@@ -154,10 +178,13 @@ def collect_vcf_ins_sequences(vcf_path, min_bp=VCF_INS_ALIGN_MIN_BP):
             info = parse_vcf_info(info_text)
             if str(info.get("SVTYPE", "")).upper() != "INS":
                 continue
+            svlen = vcf_ins_effective_svlen(info, caller)
+            if svlen is None or svlen < int(min_svlen):
+                continue
             if rec_id in ("", "."):
                 rec_id = f"VCF_RECORD_{line_no}"
             seq = extract_vcf_ins_sequence(ref, alt, info)
-            if seq is None or len(seq) < int(min_bp):
+            if seq is None:
                 continue
             records.append({
                 "line_no": line_no,
@@ -165,6 +192,7 @@ def collect_vcf_ins_sequences(vcf_path, min_bp=VCF_INS_ALIGN_MIN_BP):
                 "name": vcf_ins_query_name(line_no, rec_id),
                 "chrom": chrom,
                 "pos": pos,
+                "svlen": svlen,
                 "sequence": seq,
             })
     return records
@@ -174,17 +202,35 @@ def write_fasta_record(out_f, name, seq, width=80):
     for st in range(0, len(seq), width):
         out_f.write(seq[st:st + width] + "\n")
 
-def write_vcf_ins_fasta(vcf_path, out_fa, min_bp=VCF_INS_ALIGN_MIN_BP, force=False):
-    records = collect_vcf_ins_sequences(vcf_path, min_bp)
-    is_stale = (
-        not os.path.isfile(out_fa)
-        or os.path.getmtime(out_fa) < os.path.getmtime(vcf_path)
+def write_vcf_ins_fasta(
+    vcf_path,
+    out_fa,
+    force=False,
+    min_svlen=VCF_INS_MIN_SVLEN,
+):
+    records = collect_vcf_ins_sequences(vcf_path, min_svlen)
+    output_dir = os.path.dirname(os.path.abspath(out_fa))
+    fd, candidate_fa = tempfile.mkstemp(
+        prefix=f".{os.path.basename(out_fa)}.",
+        suffix=".tmp",
+        dir=output_dir,
     )
-    if force or is_stale:
-        with open(out_fa, "wt", encoding="ascii") as out:
+    try:
+        with os.fdopen(fd, "wt", encoding="ascii") as out:
             for record in records:
                 write_fasta_record(out, record["name"], record["sequence"])
-    return len(records)
+
+        changed = (
+            force
+            or not os.path.isfile(out_fa)
+            or not filecmp.cmp(candidate_fa, out_fa, shallow=False)
+        )
+        if changed:
+            os.replace(candidate_fa, out_fa)
+        return len(records), changed
+    finally:
+        if os.path.exists(candidate_fa):
+            os.unlink(candidate_fa)
 
 def require_file(path, label):
     if not os.path.isfile(path):
@@ -733,20 +779,23 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
 
         vcf_ins_aln_paf = None
         vcf_ins_fa = os.path.join(alignasm_dir, f"{CELL_LINE}.vcf.ins.fa")
-        vcf_ins_count = write_vcf_ins_fasta(
-            benchmark_vcf_loc, vcf_ins_fa, VCF_INS_ALIGN_MIN_BP, force
+        vcf_ins_count, vcf_ins_fasta_changed = write_vcf_ins_fasta(
+            benchmark_vcf_loc, vcf_ins_fa, force=force
         )
         if vcf_ins_count > 0:
-            _, vcf_ins_aln_paf = run_alignasm(
-                alignasm_folder_vcf, thread, vcf_ins_fa, alignasm_ref_loc,
-                alignasm_loc, force
-            )
+            vcf_ins_aln_paf = f"{alignasm_folder_vcf}.aln.paf"
+            if vcf_ins_fasta_changed or not os.path.isfile(vcf_ins_aln_paf):
+                _, vcf_ins_aln_paf = run_alignasm(
+                    alignasm_folder_vcf, thread, vcf_ins_fa, alignasm_ref_loc,
+                    alignasm_loc, force or vcf_ins_fasta_changed
+                )
 
+        effective_skype_force = skype_force or vcf_ins_fasta_changed
         depth_loc = os.path.abspath(depth_loc)
         return run_skype_func(
             CELL_LINE, os.path.abspath(skype_dir), ctg_paf, ctg_aln_paf,
             utg_paf, utg_aln_paf, depth_loc, thread, dep_folder, is_progress,
-            skype_force, graph_depth, option_02=option_02,
+            effective_skype_force, graph_depth, option_02=option_02,
             skype_start_at=skype_start_at, print_args=print_args,
             benchmark_vcf_loc=benchmark_vcf_loc, reference_bundle=reference_bundle,
             vcf_ins_aln_paf=vcf_ins_aln_paf
