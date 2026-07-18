@@ -570,26 +570,28 @@ def run_alignasm(PREFIX_PATH, thread, fa_loc, ref_loc, ALIGNASM_LOC, force):
     is_file = all(map(os.path.isfile, tar_paf_tuple))
 
     if not is_file or force:
-        subprocess.run([
-            "minimap2", "--cs", "-t", THREAD, "-x", "asm20",
-            "--no-long-join", "-r2k", "-K10G",
-            ref_loc, fa_loc, "-o", paf_file
-        ], check=True)
-
-        if is_nonempty_file(paf_file):
-            subprocess.run([
-                "python3", os.path.join(SCRIPT_DIR, "paf_gap_seq.py"),
-                fa_loc, paf_file, pat_fa_file
-            ], check=True)
-
+        if force or not os.path.isfile(paf_file):
             subprocess.run([
                 "minimap2", "--cs", "-t", THREAD, "-x", "asm20",
-                "-r2k", "-K10G",
-                ref_loc, pat_fa_file, "-o", alt_paf_file
+                "--no-long-join", "-r2k", "-K10G",
+                ref_loc, fa_loc, "-o", paf_file
             ], check=True)
-        else:
-            open(pat_fa_file, "wt").close()
-            open(alt_paf_file, "wt").close()
+
+        if force or not os.path.isfile(alt_paf_file):
+            if is_nonempty_file(paf_file):
+                subprocess.run([
+                    "python3", os.path.join(SCRIPT_DIR, "paf_gap_seq.py"),
+                    fa_loc, paf_file, pat_fa_file
+                ], check=True)
+
+                subprocess.run([
+                    "minimap2", "--cs", "-t", THREAD, "-x", "asm20",
+                    "-r2k", "-K10G",
+                    ref_loc, pat_fa_file, "-o", alt_paf_file
+                ], check=True)
+            else:
+                open(pat_fa_file, "wt").close()
+                open(alt_paf_file, "wt").close()
 
         alignasm_cmd = [
             ALIGNASM_LOC, paf_file,
