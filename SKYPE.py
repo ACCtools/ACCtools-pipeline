@@ -1,5 +1,7 @@
 import os
 import filecmp
+import json
+import pickle
 import shlex
 import shutil
 import psutil
@@ -24,6 +26,8 @@ HS1_ALIGNASM_DIR = "20_alignasm"
 HG38_ALIGNASM_DIR = "21_alignasm_hg38"
 HS1_SKYPE_DIR = "30_skype"
 HG38_SKYPE_DIR = "31_skype_hg38"
+HS1_FULL_ASSEMBLY_SKYPE_DIR = "30_skype_full_assembly"
+HG38_FULL_ASSEMBLY_SKYPE_DIR = "31_skype_hg38_full_assembly"
 
 # Hg38 const
 HG38_URL = "https://hgdownload.soe.ucsc.edu/goldenpath/hg38/bigZips/hg38.fa.gz"
@@ -71,6 +75,14 @@ def alignasm_dir_name(reference):
 
 def skype_dir_name(reference):
     return reference_stage_dir(reference, HS1_SKYPE_DIR, HG38_SKYPE_DIR)
+
+
+def full_assembly_skype_dir_name(reference):
+    return reference_stage_dir(
+        reference,
+        HS1_FULL_ASSEMBLY_SKYPE_DIR,
+        HG38_FULL_ASSEMBLY_SKYPE_DIR,
+    )
 
 
 def gfa_to_fa(gfa_file, out_fa):
@@ -242,6 +254,278 @@ def ensure_fai(fasta_path, force):
         subprocess.run(["samtools", "faidx", fasta_path], check=True)
     return fai_path
 
+
+def read_fai_lengths(fai_path):
+    lengths = {}
+    with open(fai_path, "rt", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            values = line.rstrip("\r\n").split("\t")
+            if len(values) < 2:
+                raise ValueError(f"{fai_path}:{line_number}: malformed FAI row")
+            name = values[0]
+            if name in lengths:
+                raise ValueError(f"{fai_path}:{line_number}: duplicate contig {name!r}")
+            lengths[name] = int(values[1])
+    if not lengths:
+        raise ValueError(f"FAI has no contigs: {fai_path}")
+    return lengths
+
+
+def ensure_current_fai(fasta_path):
+    fai_path = f"{fasta_path}.fai"
+    if (
+        not os.path.isfile(fai_path)
+        or os.path.getmtime(fai_path) < os.path.getmtime(fasta_path)
+    ):
+        subprocess.run(["samtools", "faidx", fasta_path], check=True)
+    return fai_path
+
+
+def full_assembly_cache_stem(assembly_path):
+    name = os.path.basename(os.path.abspath(assembly_path))
+    lower_name = name.lower()
+    for suffix in (".fasta", ".fna", ".fas", ".fa"):
+        if lower_name.endswith(suffix):
+            return name[:-len(suffix)]
+    return os.path.splitext(name)[0]
+
+
+def full_assembly_paf_cache_path(assembly_path, reference):
+    assembly_path = os.path.abspath(assembly_path)
+    return os.path.join(
+        os.path.dirname(assembly_path),
+        f"{full_assembly_cache_stem(assembly_path)}.{get_reference_name(reference)}.aln.paf",
+    )
+
+
+def file_signature(path):
+    stat = os.stat(path)
+    return {
+        "path": os.path.abspath(path),
+        "size": int(stat.st_size),
+        "mtime_ns": int(stat.st_mtime_ns),
+    }
+
+
+def validate_full_assembly_paf_content(
+    paf_path,
+    assembly_lengths,
+    reference_lengths,
+    trace_tag_prefixes=("cs:Z:",),
+):
+    record_count = 0
+    primary_count = 0
+    seen_queries = set()
+    with open(paf_path, "rt", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            values = line.rstrip("\r\n").split("\t")
+            if len(values) < 12:
+                raise ValueError(
+                    f"{paf_path}:{line_number}: expected at least 12 PAF fields"
+                )
+            try:
+                query_length = int(values[1])
+                query_start = int(values[2])
+                query_end = int(values[3])
+                target_length = int(values[6])
+                target_start = int(values[7])
+                target_end = int(values[8])
+                int(values[9])
+                int(values[10])
+                int(values[11])
+            except ValueError as exc:
+                raise ValueError(
+                    f"{paf_path}:{line_number}: invalid numeric PAF field"
+                ) from exc
+            query_name = values[0]
+            target_name = values[5]
+            if query_name not in assembly_lengths:
+                raise ValueError(
+                    f"{paf_path}:{line_number}: query {query_name!r} is absent from the assembly"
+                )
+            if query_length != assembly_lengths[query_name]:
+                raise ValueError(
+                    f"{paf_path}:{line_number}: query length mismatch for {query_name}"
+                )
+            if target_name not in reference_lengths:
+                raise ValueError(
+                    f"{paf_path}:{line_number}: target {target_name!r} is absent from the reference"
+                )
+            if target_length != reference_lengths[target_name]:
+                raise ValueError(
+                    f"{paf_path}:{line_number}: target length mismatch for {target_name}"
+                )
+            if not 0 <= query_start <= query_end <= query_length:
+                raise ValueError(f"{paf_path}:{line_number}: invalid query interval")
+            if not 0 <= target_start <= target_end <= target_length:
+                raise ValueError(f"{paf_path}:{line_number}: invalid target interval")
+            if values[4] not in {"+", "-"}:
+                raise ValueError(f"{paf_path}:{line_number}: invalid strand")
+            tags = values[12:]
+            is_secondary = "tp:A:S" in tags
+            if not is_secondary:
+                primary_count += 1
+                if not any(
+                    tag.startswith(tuple(trace_tag_prefixes)) for tag in tags
+                ):
+                    raise ValueError(
+                        f"{paf_path}:{line_number}: primary alignment has no "
+                        f"{'/'.join(trace_tag_prefixes)} trace tag"
+                    )
+                seen_queries.add(query_name)
+            record_count += 1
+    if record_count == 0 or primary_count == 0:
+        raise ValueError(f"PAF has no primary alignments: {paf_path}")
+    return {
+        "record_count": record_count,
+        "primary_count": primary_count,
+        "mapped_query_count": len(seen_queries),
+    }
+
+
+def full_assembly_manifest(assembly_path, reference_path, reference, command):
+    return {
+        "version": 2,
+        "assembly": file_signature(assembly_path),
+        "reference": file_signature(reference_path),
+        "reference_name": get_reference_name(reference),
+        "commands": command,
+        "paf_kind": "alignasm_aln_paf",
+    }
+
+
+def full_assembly_cache_is_valid(
+    paf_path,
+    assembly_path,
+    reference_path,
+    reference,
+    assembly_lengths,
+    reference_lengths,
+    command,
+):
+    manifest_path = f"{paf_path}.meta.json"
+    if not is_nonempty_file(paf_path) or not os.path.isfile(manifest_path):
+        return False
+    if os.path.getmtime(paf_path) < max(
+        os.path.getmtime(assembly_path), os.path.getmtime(reference_path)
+    ):
+        return False
+    try:
+        with open(manifest_path, "rt", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        if manifest != full_assembly_manifest(
+            assembly_path, reference_path, reference, command
+        ):
+            return False
+        validate_full_assembly_paf_content(
+            paf_path, assembly_lengths, reference_lengths
+        )
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+    return True
+
+
+def ensure_full_assembly_paf(
+    assembly_path,
+    reference_bundle,
+    thread,
+    alignasm_loc,
+    force=False,
+):
+    assembly_path = os.path.abspath(assembly_path)
+    require_file(assembly_path, "full assembly FASTA")
+    if assembly_path.lower().endswith(".gz"):
+        raise ValueError("--full_assembly currently requires a plain, uncompressed FASTA")
+    reference_path = os.path.abspath(reference_bundle.alignasm_ref)
+    require_file(reference_path, "full-assembly alignment reference")
+    alignasm_loc = os.path.abspath(alignasm_loc)
+    require_file(alignasm_loc, "alignasm binary")
+    assembly_fai = ensure_current_fai(assembly_path)
+    reference_fai = ensure_current_fai(reference_path)
+    assembly_lengths = read_fai_lengths(assembly_fai)
+    reference_lengths = read_fai_lengths(reference_fai)
+    paf_path = full_assembly_paf_cache_path(assembly_path, reference_bundle)
+    cache_prefix = paf_path[:-len(".aln.paf")]
+    raw_paf_path = f"{cache_prefix}.paf"
+    thread_text = str(max(int(thread), 1))
+    command = {
+        "minimap2_primary": [
+            "minimap2", "--cs", "-t", thread_text, "-x", "asm20",
+            "--no-long-join", "-r2k", "-K10G",
+            reference_path, assembly_path, "-o", raw_paf_path,
+        ],
+        "gap_sequence": [
+            "python3", os.path.join(SCRIPT_DIR, "paf_gap_seq.py"),
+            assembly_path, raw_paf_path, f"{cache_prefix}.pat.fa",
+        ],
+        "minimap2_gap": [
+            "minimap2", "--cs", "-t", thread_text, "-x", "asm20",
+            "-r2k", "-K10G", reference_path, f"{cache_prefix}.pat.fa",
+            "-o", f"{cache_prefix}.alt.paf",
+        ],
+        "alignasm": [
+            alignasm_loc, raw_paf_path, "-t", thread_text,
+            "--non_skip_linkable", "-a", f"{cache_prefix}.alt.paf",
+        ],
+        "alignasm_binary": file_signature(alignasm_loc),
+    }
+    if not force and full_assembly_cache_is_valid(
+        paf_path,
+        assembly_path,
+        reference_path,
+        reference_bundle,
+        assembly_lengths,
+        reference_lengths,
+        command,
+    ):
+        print(f"Reusing full-assembly alignasm PAF: {paf_path}")
+        return paf_path, False
+
+    output_dir = os.path.dirname(paf_path)
+    candidate_dir = tempfile.mkdtemp(
+        prefix=f".{os.path.basename(cache_prefix)}.alignasm.", dir=output_dir
+    )
+    candidate_prefix = os.path.join(candidate_dir, os.path.basename(cache_prefix))
+    try:
+        _candidate_raw_paf, candidate_path = run_alignasm(
+            candidate_prefix,
+            int(thread_text),
+            assembly_path,
+            reference_path,
+            alignasm_loc,
+            True,
+        )
+        validate_full_assembly_paf_content(
+            candidate_path, assembly_lengths, reference_lengths
+        )
+        for suffix in (".paf", ".pat.fa", ".alt.paf", ".aln.paf"):
+            candidate_artifact = f"{candidate_prefix}{suffix}"
+            if os.path.exists(candidate_artifact):
+                os.replace(candidate_artifact, f"{cache_prefix}{suffix}")
+        manifest = full_assembly_manifest(
+            assembly_path, reference_path, reference_bundle, command
+        )
+        manifest_fd, candidate_manifest_path = tempfile.mkstemp(
+            prefix=f".{os.path.basename(paf_path)}.meta.",
+            suffix=".tmp",
+            dir=output_dir,
+        )
+        try:
+            with os.fdopen(manifest_fd, "wt", encoding="utf-8") as handle:
+                json.dump(manifest, handle, indent=2, sort_keys=True)
+                handle.write("\n")
+            os.replace(candidate_manifest_path, f"{paf_path}.meta.json")
+        finally:
+            if os.path.exists(candidate_manifest_path):
+                os.unlink(candidate_manifest_path)
+    finally:
+        shutil.rmtree(candidate_dir, ignore_errors=True)
+    return paf_path, True
+
 def ensure_hg38_source(dep_folder, force):
     source_fa = os.path.join(dep_folder, HG38_SOURCE_FA)
     source_gz = f"{source_fa}.gz"
@@ -372,7 +656,7 @@ def sort_sam_and_index_bam_with_samtools(sam_file, sorted_bam_file, thread, forc
 
 def hifi_preprocess(
     CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, hifiasm_args,
-    reference=REFERENCE_HS1,
+    reference=REFERENCE_HS1, full_assembly=None,
 ):
     # Preprocessing pipeline for HiFi data using hifiasm.
     depth_window = 100 * 1000
@@ -387,32 +671,37 @@ def hifi_preprocess(
     hifiasm_args = normalize_extra_args(hifiasm_args)
     minimap2_preset = "lr:hq" if "--ont" in hifiasm_args else "map-hifi"
 
-    # De novo assembly
-    hifiasm_folder = os.path.join(PREFIX, '00_hifiasm')
-    os.makedirs(hifiasm_folder, exist_ok=True)
+    if full_assembly is None:
+        # De novo assembly
+        hifiasm_folder = os.path.join(PREFIX, '00_hifiasm')
+        os.makedirs(hifiasm_folder, exist_ok=True)
 
-    gfa_loc_list = [os.path.join(hifiasm_folder, f"{CELL_LINE}.{gfa_suffix}") for gfa_suffix in ['p_ctg.gfa', 'r_utg.gfa']]
-    is_file = all(map(os.path.isfile, gfa_loc_list))
+        gfa_loc_list = [os.path.join(hifiasm_folder, f"{CELL_LINE}.{gfa_suffix}") for gfa_suffix in ['p_ctg.gfa', 'r_utg.gfa']]
+        is_file = all(map(os.path.isfile, gfa_loc_list))
 
-    if not is_file or force:
-        hifiasm_cmd = [
-            'hifiasm', '-o', f'{hifiasm_folder}/{CELL_LINE}',
-            '--telo-m', 'CCCTAA', '-t', THREAD] + hifi_fastq + ['--primary']
-        if hifiasm_args:
-            hifiasm_cmd.extend(hifiasm_args)
-        subprocess.run(hifiasm_cmd, check=True)
+        if not is_file or force:
+            hifiasm_cmd = [
+                'hifiasm', '-o', f'{hifiasm_folder}/{CELL_LINE}',
+                '--telo-m', 'CCCTAA', '-t', THREAD] + hifi_fastq + ['--primary']
+            if hifiasm_args:
+                hifiasm_cmd.extend(hifiasm_args)
+            subprocess.run(hifiasm_cmd, check=True)
 
-    out_fa_list = []
-    os.makedirs(os.path.join(PREFIX, "10_asm"), exist_ok=True)
-    for gfa_suffix in ['p_ctg.gfa', 'r_utg.gfa']:
-        gfa_file = os.path.join(hifiasm_folder, f"{CELL_LINE}.{gfa_suffix}")
+        out_fa_list = []
+        os.makedirs(os.path.join(PREFIX, "10_asm"), exist_ok=True)
+        for gfa_suffix in ['p_ctg.gfa', 'r_utg.gfa']:
+            gfa_file = os.path.join(hifiasm_folder, f"{CELL_LINE}.{gfa_suffix}")
 
-        kind = gfa_suffix[0]
-        out_fa = os.path.join(PREFIX, "10_asm", f"{CELL_LINE}.{kind}.fa")
-        if not os.path.isfile(out_fa) or force:
-            gfa_to_fa(gfa_file, out_fa)
+            kind = gfa_suffix[0]
+            out_fa = os.path.join(PREFIX, "10_asm", f"{CELL_LINE}.{kind}.fa")
+            if not os.path.isfile(out_fa) or force:
+                gfa_to_fa(gfa_file, out_fa)
 
-        out_fa_list.append(out_fa)
+            out_fa_list.append(out_fa)
+    else:
+        require_file(full_assembly, "full assembly FASTA")
+        full_assembly = os.path.abspath(full_assembly)
+        out_fa_list = [full_assembly, full_assembly]
 
     # Mapping read to reference
     refseq = reference_bundle.depth_ref
@@ -444,7 +733,7 @@ def hifi_preprocess(
 
 def flye_preprocess(
     CELL_LINE, PREFIX, hifi_fastq, thread, dep_folder, force, flye_type,
-    flye_args, minimap2_preset, reference=REFERENCE_HS1,
+    flye_args, minimap2_preset, reference=REFERENCE_HS1, full_assembly=None,
 ):
     # Preprocessing pipeline for long-read data using Flye.
     minimap2_preset_flye = get_minimap2_preset_from_flye(flye_type)
@@ -464,20 +753,25 @@ def flye_preprocess(
     THREAD = str(thread)
     flye_args = normalize_extra_args(flye_args)
 
-    # De novo assembly
-    flye_folder = os.path.join(PREFIX, '00_flye')
-    os.makedirs(flye_folder, exist_ok=True)
+    if full_assembly is None:
+        # De novo assembly
+        flye_folder = os.path.join(PREFIX, '00_flye')
+        os.makedirs(flye_folder, exist_ok=True)
 
-    out_fa_list = [os.path.join(flye_folder, 'assembly.fasta'), os.path.join(flye_folder, 'assembly_graph.gfa')]
-    is_file = all(map(os.path.isfile, out_fa_list))
+        out_fa_list = [os.path.join(flye_folder, 'assembly.fasta'), os.path.join(flye_folder, 'assembly_graph.gfa')]
+        is_file = all(map(os.path.isfile, out_fa_list))
 
-    if not is_file or force:
-        flye_cmd = [
-            'flye', f'--{flye_type}'] + hifi_fastq + ['-o', f'{flye_folder}',
-            '-t', THREAD]
-        if flye_args:
-            flye_cmd.extend(flye_args)
-        subprocess.run(flye_cmd, check=True)
+        if not is_file or force:
+            flye_cmd = [
+                'flye', f'--{flye_type}'] + hifi_fastq + ['-o', f'{flye_folder}',
+                '-t', THREAD]
+            if flye_args:
+                flye_cmd.extend(flye_args)
+            subprocess.run(flye_cmd, check=True)
+    else:
+        require_file(full_assembly, "full assembly FASTA")
+        full_assembly = os.path.abspath(full_assembly)
+        out_fa_list = [full_assembly, full_assembly]
     
     # Mapping read to reference
     refseq = reference_bundle.depth_ref
@@ -606,6 +900,110 @@ def run_alignasm(PREFIX_PATH, thread, fa_loc, ref_loc, ALIGNASM_LOC, force):
 def subprocess_print(args, **kwargs):
     print(*args)
 
+
+def validate_full_assembly_restart(prefix, assembly_path, paf_path, reference):
+    mode_path = os.path.join(prefix, "pipeline_mode.pkl")
+    if not os.path.isfile(mode_path):
+        raise FileNotFoundError(
+            f"Full-assembly restart metadata is missing: {mode_path}. Start from stage 21."
+        )
+    with open(mode_path, "rb") as handle:
+        config = pickle.load(handle)
+    expected = {
+        "mode": "full_assembly",
+        "full_assembly_path": os.path.abspath(assembly_path),
+        "full_assembly_paf_path": os.path.abspath(paf_path),
+        "reference": get_reference_name(reference),
+    }
+    mismatches = {
+        key: (config.get(key), value)
+        for key, value in expected.items()
+        if config.get(key) != value
+    }
+    if mismatches:
+        raise ValueError(
+            f"Full-assembly restart metadata does not match the requested inputs: {mismatches}"
+        )
+
+
+def run_full_assembly_skype(
+    cell_line,
+    prefix,
+    assembly_path,
+    assembly_paf,
+    depth_loc,
+    thread,
+    dep_folder,
+    is_progress,
+    skype_force,
+    reference_bundle,
+    skype_start_at=0,
+    print_args=False,
+):
+    """Run the dedicated full-assembly pipeline as one subprocess."""
+
+    dep_folder = os.path.abspath(dep_folder)
+    skype_folder_loc = os.path.join(dep_folder, "SKYPE")
+    prefix = os.path.abspath(prefix)
+    assembly_path = os.path.abspath(assembly_path)
+    assembly_paf = os.path.abspath(assembly_paf)
+    depth_loc = os.path.abspath(depth_loc)
+    os.makedirs(prefix, exist_ok=True)
+    require_file(depth_loc, "sample depth statistics")
+    valid_start_stages = {0, 21, 22, 23, 30, 31}
+    if skype_start_at not in valid_start_stages:
+        raise ValueError(
+            "Full-assembly --skype_start_at must be one of 21, 22, 23, 30, or 31"
+        )
+    if skype_start_at > 21 and not print_args:
+        validate_full_assembly_restart(
+            prefix, assembly_path, assembly_paf, reference_bundle
+        )
+
+    thread_text = str(max(int(thread), 1))
+    subprocess_run = subprocess_print if print_args else subprocess.run
+    expected_outputs = (
+        os.path.join(prefix, "virtual_sky.png"),
+        os.path.join(prefix, "total_cov.png"),
+    )
+    should_run = (
+        not all(os.path.isfile(path) for path in expected_outputs)
+        or skype_force
+        or skype_start_at > 0
+    )
+    if not should_run:
+        return
+
+    start_at = 21 if skype_start_at == 0 else skype_start_at
+    pipeline_threads = int(thread_text)
+    if start_at == 21:
+        free_mem_gb = psutil.virtual_memory().available * MEM_SAFE_RATIO / (1024 ** 3)
+        thread_limit = max(int(free_mem_gb / 6), 1)
+        pipeline_threads = max(min(thread_limit, int(thread)), 1)
+
+    command = [
+        "python",
+        os.path.join(skype_folder_loc, "full_assembly_pipeline.py"),
+        assembly_paf,
+        assembly_path,
+        depth_loc,
+        reference_bundle.rcs_bed,
+        reference_bundle.tel_bed,
+        reference_bundle.chr_fai,
+        reference_bundle.cyt_bed,
+        prefix,
+        cell_line,
+        "--pandepth-loc",
+        os.path.join(dep_folder, "PanDepth", "bin", "pandepth"),
+        "-t",
+        str(pipeline_threads),
+        "--reference",
+        get_reference_name(reference_bundle),
+        "--start-at",
+        str(start_at),
+    ]
+    subprocess_run(command, check=True)
+
 def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf,
               depth_loc, thread, dep_folder, is_progress, skype_force, graph_depth,
               option_02="", skype_start_at=0, print_args=False,
@@ -724,7 +1122,8 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf,
 def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_folder,
              is_progress, force, skype_force, run_skype_func, graph_depth,
              no_utg=False, skype_dir=None, option_02="", skype_start_at=0,
-             print_args=False, reference=REFERENCE_HS1, benchmark_vcf_loc=None):
+             print_args=False, reference=REFERENCE_HS1, benchmark_vcf_loc=None,
+             full_assembly=None):
     # Main analysis function that orchestrates alignment and SKYPE execution.
     os.makedirs(PREFIX, exist_ok=True)
 
@@ -734,7 +1133,46 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
     reference_bundle = resolve_reference_bundle(dep_folder, reference, force)
 
     if skype_dir is None:
-        skype_dir = os.path.join(PREFIX, skype_dir_name(reference_bundle))
+        output_dir_name = (
+            full_assembly_skype_dir_name(reference_bundle)
+            if full_assembly is not None
+            else skype_dir_name(reference_bundle)
+        )
+        skype_dir = os.path.join(PREFIX, output_dir_name)
+
+    if full_assembly is not None:
+        if benchmark_vcf_loc is not None:
+            raise ValueError("--full_assembly and --benchmark_vcf_loc are mutually exclusive")
+        print(
+            "Full-assembly mode: CONTIG and UNITIG inputs are ignored; "
+            "only --full_assembly supplies matrix paths."
+        )
+        assembly_paf, paf_rebuilt = ensure_full_assembly_paf(
+            full_assembly,
+            reference_bundle,
+            thread,
+            os.path.join(dep_folder, "alignasm", "build", "alignasm"),
+            force=force,
+        )
+        if skype_start_at > 21 and paf_rebuilt:
+            raise ValueError(
+                "The full-assembly PAF cache was rebuilt, so stage-21 contig "
+                "paths are stale. Restart with --skype_start_at 21."
+            )
+        return run_full_assembly_skype(
+            CELL_LINE,
+            skype_dir,
+            full_assembly,
+            assembly_paf,
+            depth_loc,
+            thread,
+            dep_folder,
+            is_progress,
+            skype_force,
+            reference_bundle,
+            skype_start_at=skype_start_at,
+            print_args=print_args,
+        )
     
     alignasm_ref_loc = reference_bundle.alignasm_ref
     alignasm_loc = os.path.join(dep_folder, 'alignasm', 'build', 'alignasm')
@@ -917,9 +1355,14 @@ def get_skype_parser():
             default=REFERENCE_HS1,
             help="Reference build for alignment/depth/SKYPE resources"
         )
-        subparser.add_argument(
+        input_group = subparser.add_mutually_exclusive_group()
+        input_group.add_argument(
             "--benchmark_vcf_loc", type=str,
             help="Benchmark VCF input; enables SKYPE VCF input mode"
+        )
+        input_group.add_argument(
+            "--full_assembly", type=str,
+            help="Complete genome assembly FASTA; use each FASTA contig as the only SKYPE matrix paths"
         )
     
 
@@ -1021,7 +1464,8 @@ def main():
             args.skype_force, run_skype, args.graph_depth, skype_dir=args.skype_dir,
             option_02=args.option_02, skype_start_at=args.skype_start_at,
             print_args=args.print_args, reference=args.reference,
-            benchmark_vcf_loc=args.benchmark_vcf_loc
+            benchmark_vcf_loc=args.benchmark_vcf_loc,
+            full_assembly=args.full_assembly,
         )
     elif args.command == 'run_hifi':
         if not args.HIFI_FASTQ:
@@ -1029,7 +1473,7 @@ def main():
         ctg_loc, utg_loc = hifi_preprocess(
             args.prefix, args.WORK_DIR, args.HIFI_FASTQ, args.thread,
             args.dependency_loc, args.preprocess_force, args.hifiasm_args,
-            reference=args.reference
+            reference=args.reference, full_assembly=args.full_assembly,
         )
         
         depth_loc = os.path.join(args.WORK_DIR, depth_dir_name(args.reference), f'{args.prefix}.win.stat.gz')
@@ -1041,7 +1485,8 @@ def main():
             args.prefix, args.WORK_DIR, ctg_loc, utg_loc, depth_loc, args.thread,
             dep_folder, args.progress, args.preprocess_force, args.skype_force,
             run_skype, args.graph_depth, option_02=args.option_02,
-            reference=args.reference, benchmark_vcf_loc=args.benchmark_vcf_loc
+            reference=args.reference, benchmark_vcf_loc=args.benchmark_vcf_loc,
+            full_assembly=args.full_assembly,
         )
     elif args.command == 'preprocess_flye':
         flye_preprocess(args.prefix, args.WORK_DIR, args.LONG_READ_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.FLYE_TYPE, args.flye_args, args.minimap2_preset)
@@ -1049,7 +1494,8 @@ def main():
         ctg_loc, utg_loc = flye_preprocess(
             args.prefix, args.WORK_DIR, args.LONG_READ_FASTQ, args.thread,
             args.dependency_loc, args.preprocess_force, args.FLYE_TYPE,
-            args.flye_args, args.minimap2_preset, reference=args.reference
+            args.flye_args, args.minimap2_preset, reference=args.reference,
+            full_assembly=args.full_assembly,
         )
         depth_loc = os.path.join(args.WORK_DIR, depth_dir_name(args.reference), f'{args.prefix}.win.stat.gz')
 
@@ -1062,7 +1508,8 @@ def main():
             args.prefix, args.WORK_DIR, ctg_loc, utg_loc, depth_loc, args.thread,
             dep_folder, args.progress, args.preprocess_force, args.skype_force,
             run_skype, args.graph_depth, no_utg=True, option_02=args.option_02,
-            reference=args.reference, benchmark_vcf_loc=args.benchmark_vcf_loc
+            reference=args.reference, benchmark_vcf_loc=args.benchmark_vcf_loc,
+            full_assembly=args.full_assembly,
         )
 
 

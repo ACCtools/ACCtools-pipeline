@@ -75,7 +75,7 @@ argument after the working directory is interpreted as an input read file.
 
 ## Analysis modes
 
-The default is **karyotype mode**, which applies karyotype-oriented filtering and produces the base, `_filter`, and `_cluster` result sets. The two modes below are intended for retaining and quantifying structural-variant candidates. Because `run_hifi` treats every argument after the working directory as a read file, place all options before `<Working directory>`.
+The default is **karyotype mode**, which applies karyotype-oriented filtering and produces the base, `_filter`, and `_cluster` result sets. The modes below provide alternative inputs or filtering behavior. Because `run_hifi` treats every argument after the working directory as a read file, place all options before `<Working directory>`.
 
 ### Variant mode
 
@@ -120,6 +120,27 @@ python SKYPE.py run_hifi \
 ```
 
 The main VCF-mode result is `<SKYPE output directory>/SV_benchmark_result.vcf`. It preserves the input records and adds `SKYPE_CN` and `SKYPE_STATUS`; records with side-specific measurements also receive `SKYPE_CN_DETAIL` and `SKYPE_STATUS_DETAIL`. The default SKYPE output directory is `<Working directory>/30_skype` for `hs1` and `<Working directory>/31_skype_hg38` for `hg38`. Parsing diagnostics are written to `vcf_mode_summary.json`, `vcf_mode_summary.tsv`, `vcf_mode_skipped_records.tsv`, and `vcf_mode_orientation_mismatches.tsv` in the same directory.
+
+### Full-assembly input mode
+
+Full-assembly mode uses each record of a complete genome assembly FASTA as one
+matrix path. It aligns the FASTA to the selected reference with minimap2 and
+alignasm, then passes the resulting `*.aln.paf` to the standalone
+`full_assembly_pipeline.py`. None of the normal numbered stage scripts are
+entered; their Virtual SKY and coverage drawing functions are shared as
+reusable renderers instead. It is mutually exclusive with
+`--benchmark_vcf_loc`.
+
+```bash
+python SKYPE.py analysis \
+  --full_assembly /path/HG008T_v3.2.fasta \
+  --reference hs1 \
+  <Working directory> <ignored-contig.fa> <ignored-unitig.fa> <depth.win.stat.gz>
+```
+
+The option is also accepted by `run_hifi` and `run_flye`; those commands still
+map the reads and calculate sample depth but skip hifiasm/Flye assembly. Place
+the option before `<Working directory>` for `run_hifi`.
 
 ## Compatible VCF inputs
 
