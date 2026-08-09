@@ -1099,10 +1099,31 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf,
                 JULIA_THREAD = min(int(THREAD), core_num)
 
             subprocess_run([
+                "python", os.path.join(skype_folder_loc, "25_cluster_nclose_read_count.py"),
+                PPC_PAF_LOC, MAIN_STAT_NORM_LOC, CHR_FAI, PREFIX, READ_BAM_LOC,
+                "-t", THREAD,
+                "--selection_stage", "base",
+                "--artifact_prefix", "precluster_",
+            ] + PROGRESS, check=True)
+
+            subprocess_run([
                 "python", "-X", f"juliacall-threads={THREAD}", "-X", "juliacall-handle-signals=yes",
                 "24_cluster_weight.py", PPC_PAF_LOC, MAIN_STAT_NORM_LOC,
                 TEL_BED, CHR_FAI, os.path.abspath(PREFIX), "-t", str(JULIA_THREAD)
             ], check=True, cwd=skype_folder_loc)
+
+        if skype_start_at <= 25:
+            subprocess_run([
+                "python", os.path.join(skype_folder_loc, "25_cluster_nclose_read_count.py"),
+                PPC_PAF_LOC, MAIN_STAT_NORM_LOC, CHR_FAI, PREFIX, READ_BAM_LOC,
+                "-t", THREAD,
+            ] + PROGRESS, check=True)
+
+        if skype_start_at <= 26:
+            subprocess_run([
+                "python", os.path.join(skype_folder_loc, "26_nclose_read_depth_plot.py"),
+                PREFIX, MAIN_STAT_NORM_LOC,
+            ], check=True)
 
         if skype_start_at <= 30:
             subprocess_run([
