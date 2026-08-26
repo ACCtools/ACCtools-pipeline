@@ -44,6 +44,10 @@ VCF_INS_MIN_SVLEN = 100_000
 VCF_INS_SEQUENCE_INFO_KEYS = ("INSSEQ", "SVINSSEQ", "SEQ")
 
 
+class SkypeArgumentError(ValueError):
+    pass
+
+
 @dataclass
 class ReferenceBundle:
     name: str
@@ -100,6 +104,127 @@ def normalize_extra_args(extra_args):
     if isinstance(extra_args, str):
         return shlex.split(extra_args)
     return list(extra_args)
+
+
+_SPLIT_STAGE_OPTION_SPECS = {
+    "--exclude-nclose-list-loc": ("01", "--exclude-nclose-list-loc", 1),
+    "--exclude_nclose_list_loc": ("01", "--exclude-nclose-list-loc", 1),
+    "--skip-bam-analysis": ("01", "--skip-bam-analysis", 0),
+    "--skip_bam_analysis": ("01", "--skip-bam-analysis", 0),
+    "--check-nclose-count": ("01", "--check-nclose-count", 0),
+    "--check_nclose_count": ("01", "--check-nclose-count", 0),
+    "--nclose-count-vaf-threshold": (
+        "01", "--nclose-count-vaf-threshold", 1,
+    ),
+    "--nclose_count_vaf_threshold": (
+        "01", "--nclose-count-vaf-threshold", 1,
+    ),
+    "--disable-alt-ctg-simple": ("01", "--disable-alt-ctg-simple", 0),
+    "--disable_alt_ctg_simple": ("01", "--disable-alt-ctg-simple", 0),
+    "--vcf-filter-pass": ("01", "--vcf-filter-pass", "+"),
+    "--vcf_filter_pass": ("01", "--vcf-filter-pass", "+"),
+    "--verbose": ("10", "--verbose", 0),
+    "--add-indel-graph": ("10", "--add-indel-graph", 0),
+    "--add_indel_graph": ("10", "--add-indel-graph", 0),
+    "--limit-combinations": ("10", "--limit-combinations", 1),
+    "--limit_combinations": ("10", "--limit-combinations", 1),
+}
+
+_ORCHESTRATOR_OWNED_SPLIT_OPTIONS = {
+    "-t",
+    "--thread",
+    "-d",
+    "--graph-depth",
+    "--graph_depth",
+    "--progress",
+    "--alt",
+    "--original-paf-loc",
+    "--original_paf_loc",
+    "--vcf-input",
+    "--vcf_input",
+    "--main-stat-path",
+    "--censat-bed-path",
+    "--test",
+}
+
+
+def split_stage_options(option_02):
+    """Partition legacy stage-02 options for the split 01/10 commands.
+
+    Inputs and resource paths remain owned by ACCtools so an extra option
+    cannot silently replace the files used to construct the handoff.
+    """
+
+    tokens = normalize_extra_args(option_02)
+    stage_args = {"01": [], "10": []}
+    seen = set()
+    index = 0
+    while index < len(tokens):
+        raw_token = tokens[index]
+        option, separator, inline_value = raw_token.partition("=")
+        if option in _ORCHESTRATOR_OWNED_SPLIT_OPTIONS:
+            raise SkypeArgumentError(
+                f"{option} is controlled by ACCtools in the split 01/10 route"
+            )
+        if option not in _SPLIT_STAGE_OPTION_SPECS:
+            raise SkypeArgumentError(
+                f"Unknown --option_02 argument for the split 01/10 route: "
+                f"{option}"
+            )
+        stage, canonical, arity = _SPLIT_STAGE_OPTION_SPECS[option]
+        if canonical in seen:
+            raise SkypeArgumentError(
+                f"Duplicate --option_02 argument: {canonical}"
+            )
+        seen.add(canonical)
+
+        if arity == 0:
+            if separator:
+                raise SkypeArgumentError(
+                    f"{option} does not accept a value"
+                )
+            values = []
+        elif separator:
+            if not inline_value:
+                raise SkypeArgumentError(f"{option} requires a value")
+            values = [inline_value]
+        elif arity == 1:
+            if index + 1 >= len(tokens):
+                raise SkypeArgumentError(f"{option} requires a value")
+            index += 1
+            values = [tokens[index]]
+        else:
+            values = []
+            while index + 1 < len(tokens):
+                next_token = tokens[index + 1]
+                next_option = next_token.partition("=")[0]
+                if next_option.startswith("-"):
+                    break
+                index += 1
+                values.append(tokens[index])
+            if not values:
+                raise SkypeArgumentError(
+                    f"{option} requires at least one value"
+                )
+
+        stage_args[stage].append(canonical)
+        stage_args[stage].extend(values)
+        index += 1
+
+    return stage_args["01"], stage_args["10"]
+
+
+def require_restart_inputs(prefix, stage, required_paths):
+    missing = [
+        os.path.join(prefix, path)
+        for path in required_paths
+        if not os.path.exists(os.path.join(prefix, path))
+    ]
+    if missing:
+        raise SkypeArgumentError(
+            f"Cannot restart at stage {stage}; missing prerequisite artifact(s): "
+            + ", ".join(missing)
+        )
 
 def sanitize_vcf_id(value):
     value = str(value) if value not in (None, "") else "unknown"
@@ -910,7 +1035,7 @@ def validate_full_assembly_restart(prefix, assembly_path, paf_path, reference):
     with open(mode_path, "rb") as handle:
         config = pickle.load(handle)
     expected = {
-        "mode": "full_assembly",
+        "full_assembly_input": True,
         "full_assembly_path": os.path.abspath(assembly_path),
         "full_assembly_paf_path": os.path.abspath(paf_path),
         "reference": get_reference_name(reference),
@@ -1007,12 +1132,25 @@ def run_full_assembly_skype(
 def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf,
               depth_loc, thread, dep_folder, is_progress, skype_force, graph_depth,
               option_02="", skype_start_at=0, print_args=False,
-              benchmark_vcf_loc=None, reference_bundle=None, vcf_ins_aln_paf=None):
+              benchmark_vcf_loc=None, reference_bundle=None, vcf_ins_aln_paf=None,
+              legacy=False):
     # Execute the core SKYPE analysis scripts.
     dep_folder = os.path.abspath(dep_folder)
     skype_folder_loc = os.path.join(dep_folder, "SKYPE")
     if reference_bundle is None:
         reference_bundle = resolve_reference_bundle(dep_folder, REFERENCE_HS1)
+
+    valid_start_stages = (
+        {0, 2, 11, 21, 22, 23, 31}
+        if legacy
+        else {0, 1, 10, 11, 21, 22, 23, 31}
+    )
+    if skype_start_at not in valid_start_stages:
+        valid_text = ", ".join(map(str, sorted(valid_start_stages)))
+        raise SkypeArgumentError(
+            f"Native --skype_start_at must be one of {valid_text} "
+            f"for the {'legacy 02' if legacy else 'split 01/10'} route"
+        )
 
     TEL_BED = reference_bundle.tel_bed
     CHR_FAI = reference_bundle.chr_fai
@@ -1038,16 +1176,73 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf,
     PROGRESS = ["--progress"] if is_progress else []
 
     subprocess_run = subprocess_print if print_args else subprocess.run
+    if legacy:
+        EXTRA_02 = normalize_extra_args(option_02)
+        EXTRA_01 = []
+        EXTRA_10 = []
+    else:
+        EXTRA_01, EXTRA_10 = split_stage_options(option_02)
+        EXTRA_02 = []
 
-    if not os.path.isfile(os.path.join(PREFIX, 'virtual_sky.png')) or skype_force or skype_start_at > 0:
+    expected_outputs = [
+        os.path.join(PREFIX, "total_cov.png"),
+        os.path.join(PREFIX, "nclose_report.tsv"),
+    ]
+    if benchmark_vcf_loc:
+        expected_outputs.append(os.path.join(PREFIX, "SV_benchmark_result.vcf"))
+    else:
+        expected_outputs.extend([
+            os.path.join(PREFIX, "SV_call_result.vcf"),
+            os.path.join(PREFIX, "SKYPE_result.bed"),
+        ])
+
+    if not print_args and skype_start_at > 0:
+        if REF_STAT_LOC is not None and not os.path.isfile(MAIN_STAT_NORM_LOC):
+            raise SkypeArgumentError(
+                "Cannot restart SKYPE because the normalized depth file is "
+                f"missing: {MAIN_STAT_NORM_LOC}"
+            )
+        restart_requirements = {
+            10: [
+                "01_nclose_data.pkl",
+                "pipeline_input.pkl",
+                os.path.basename(PPC_PAF_LOC),
+            ],
+            11: [
+                "path_data.pkl",
+                "paf_file_path.pkl",
+                os.path.basename(PPC_PAF_LOC),
+            ],
+            21: [
+                "path_data.pkl",
+                "11_ref_ratio_outliers",
+                os.path.basename(PPC_PAF_LOC),
+            ],
+            22: ["path_data.pkl", "contig_pat_vec_data.pkl"],
+            23: ["23_input.pkl"],
+            31: [
+                "B.npy",
+                "weight.npy",
+                "predict_B.npy",
+                "contig_pat_vec_data.pkl",
+                "tot_loc_list.pkl",
+            ],
+        }
+        if skype_start_at in restart_requirements:
+            require_restart_inputs(
+                PREFIX,
+                skype_start_at,
+                restart_requirements[skype_start_at],
+            )
+
+    if not all(os.path.isfile(path) for path in expected_outputs) or skype_force or skype_start_at > 0:
         if skype_start_at <= 0 and REF_STAT_LOC is not None:
             subprocess_run([
                 "python", os.path.join(skype_folder_loc, "00_depth_norm.py"),
                 MAIN_STAT_LOC, REF_STAT_LOC, RCS_BED
             ], check=True)
 
-        if skype_start_at <= 2:
-            EXTRA_02 = shlex.split(option_02) if option_02 else []
+        if legacy and skype_start_at <= 2:
             build_graph_cmd = [
                 "python", os.path.join(skype_folder_loc, "02_Build_Breakend_Graph_Limited.py"),
                 graph_paf_loc, CHR_FAI, TEL_BED, RPT_BED, RCS_BED, MAIN_STAT_NORM_LOC, PREFIX, READ_BAM_LOC,
@@ -1060,6 +1255,59 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf,
             else:
                 build_graph_cmd.extend(["--alt", PAF_UTG_LOC, "--original_paf_loc", ctg_paf, utg_paf])
             subprocess_run(build_graph_cmd + EXTRA_02 + PROGRESS, check=True)
+
+        if not legacy and skype_start_at <= 1:
+            preprocess_cmd = [
+                "python",
+                os.path.join(skype_folder_loc, "01_Preprocess_NClose.py"),
+                graph_paf_loc,
+                CHR_FAI,
+                TEL_BED,
+                RPT_BED,
+                RCS_BED,
+                MAIN_STAT_NORM_LOC,
+                PREFIX,
+                READ_BAM_LOC,
+                "-t",
+                THREAD,
+            ]
+            if benchmark_vcf_loc:
+                preprocess_cmd.extend([
+                    "--vcf_input",
+                    os.path.abspath(benchmark_vcf_loc),
+                ])
+                if vcf_ins_aln_paf is not None:
+                    preprocess_cmd.extend([
+                        "--alt",
+                        os.path.abspath(vcf_ins_aln_paf),
+                    ])
+            else:
+                preprocess_cmd.extend([
+                    "--alt",
+                    PAF_UTG_LOC,
+                    "--original_paf_loc",
+                    ctg_paf,
+                    utg_paf,
+                ])
+            subprocess_run(preprocess_cmd + EXTRA_01 + PROGRESS, check=True)
+
+        if not legacy and skype_start_at <= 10:
+            graph_cmd = [
+                "python",
+                os.path.join(skype_folder_loc, "10_Graph_Find_Paths.py"),
+                os.path.join(PREFIX, "01_nclose_data.pkl"),
+                CHR_FAI,
+                PREFIX,
+                "-t",
+                THREAD,
+                "-d",
+                str(graph_depth),
+                "--main-stat-path",
+                MAIN_STAT_NORM_LOC,
+                "--censat-bed-path",
+                RCS_BED,
+            ]
+            subprocess_run(graph_cmd + EXTRA_10 + PROGRESS, check=True)
 
         if skype_start_at <= 11:
             subprocess_run([
@@ -1081,35 +1329,14 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf,
         if skype_start_at <= 22:
             subprocess_run([
                 "python", os.path.join(skype_folder_loc, "22_save_matrix.py"),
-                RCS_BED, PPC_PAF_LOC, MAIN_STAT_NORM_LOC,
-                TEL_BED, CHR_FAI, CYT_BED, PREFIX, "-t", THREAD
+                RCS_BED, MAIN_STAT_NORM_LOC,
+                PREFIX, "-t", THREAD
             ] + PROGRESS, check=True)
 
         if skype_start_at <= 23:
             subprocess_run([
-                "python", "23_run_nnls.py", PPC_PAF_LOC,
-                os.path.abspath(PREFIX), MAIN_STAT_NORM_LOC, RCS_BED, PAF_UTG_LOC, "-t", THREAD
+                "python", "23_run_nnls.py", os.path.abspath(PREFIX)
             ], check=True, cwd=skype_folder_loc)
-
-        if skype_start_at <= 24:
-            core_num = psutil.cpu_count(logical=False)
-            if core_num is None:
-                JULIA_THREAD = THREAD
-            else:
-                JULIA_THREAD = min(int(THREAD), core_num)
-
-            subprocess_run([
-                "python", "-X", f"juliacall-threads={THREAD}", "-X", "juliacall-handle-signals=yes",
-                "24_cluster_weight.py", PPC_PAF_LOC, MAIN_STAT_NORM_LOC,
-                TEL_BED, CHR_FAI, os.path.abspath(PREFIX), "-t", str(JULIA_THREAD)
-            ], check=True, cwd=skype_folder_loc)
-
-        if skype_start_at <= 30:
-            subprocess_run([
-                "python", os.path.join(skype_folder_loc, "30_virtual_sky.py"),
-                PPC_PAF_LOC, MAIN_STAT_NORM_LOC,
-                TEL_BED, CHR_FAI, PREFIX, CELL_LINE
-            ], check=True)
 
         if skype_start_at <= 31:
             subprocess_run([
@@ -1123,7 +1350,7 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
              is_progress, force, skype_force, run_skype_func, graph_depth,
              no_utg=False, skype_dir=None, option_02="", skype_start_at=0,
              print_args=False, reference=REFERENCE_HS1, benchmark_vcf_loc=None,
-             full_assembly=None):
+             full_assembly=None, legacy=False):
     # Main analysis function that orchestrates alignment and SKYPE execution.
     os.makedirs(PREFIX, exist_ok=True)
 
@@ -1141,6 +1368,11 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
         skype_dir = os.path.join(PREFIX, output_dir_name)
 
     if full_assembly is not None:
+        if legacy:
+            raise SkypeArgumentError(
+                "--legacy applies only to native assembly/VCF SKYPE, not "
+                "--full_assembly"
+            )
         if benchmark_vcf_loc is not None:
             raise ValueError("--full_assembly and --benchmark_vcf_loc are mutually exclusive")
         print(
@@ -1238,7 +1470,7 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
             effective_skype_force, graph_depth, option_02=option_02,
             skype_start_at=skype_start_at, print_args=print_args,
             benchmark_vcf_loc=benchmark_vcf_loc, reference_bundle=reference_bundle,
-            vcf_ins_aln_paf=vcf_ins_aln_paf
+            vcf_ins_aln_paf=vcf_ins_aln_paf, legacy=legacy
         )
     
     if no_utg:
@@ -1252,7 +1484,8 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
             ctg_paf, ctg_aln_paf, depth_loc, thread, dep_folder, is_progress,
             skype_force, graph_depth, option_02=option_02,
             skype_start_at=skype_start_at, print_args=print_args,
-            benchmark_vcf_loc=benchmark_vcf_loc, reference_bundle=reference_bundle
+            benchmark_vcf_loc=benchmark_vcf_loc,
+            reference_bundle=reference_bundle, legacy=legacy,
         )
 
     else:
@@ -1269,7 +1502,8 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
             utg_paf, utg_aln_paf, depth_loc, thread, dep_folder, is_progress,
             skype_force, graph_depth, option_02=option_02,
             skype_start_at=skype_start_at, print_args=print_args,
-            benchmark_vcf_loc=benchmark_vcf_loc, reference_bundle=reference_bundle
+            benchmark_vcf_loc=benchmark_vcf_loc,
+            reference_bundle=reference_bundle, legacy=legacy,
         )
 
 def get_skype_parser():
@@ -1337,7 +1571,15 @@ def get_skype_parser():
         subparser.add_argument("-d", "--graph_depth", help="Depth of breakend graph", type=int, default=4)
         subparser.add_argument(
             "--option_02", type=str, default="",
-            help='Extra args forwarded to 02_Build_Breakend_Graph_Limited.py, e.g. "--variant_mode"'
+            help=(
+                "Legacy 02 options; automatically partitioned between stage "
+                "01 and 10 unless --legacy is set"
+            )
+        )
+        subparser.add_argument(
+            "--legacy",
+            action="store_true",
+            help="Run the combined legacy stage 02 instead of stages 01 and 10",
         )
         if include_start_controls:
             subparser.add_argument(
@@ -1466,6 +1708,7 @@ def main():
             print_args=args.print_args, reference=args.reference,
             benchmark_vcf_loc=args.benchmark_vcf_loc,
             full_assembly=args.full_assembly,
+            legacy=args.legacy,
         )
     elif args.command == 'run_hifi':
         if not args.HIFI_FASTQ:
@@ -1487,6 +1730,7 @@ def main():
             run_skype, args.graph_depth, option_02=args.option_02,
             reference=args.reference, benchmark_vcf_loc=args.benchmark_vcf_loc,
             full_assembly=args.full_assembly,
+            legacy=args.legacy,
         )
     elif args.command == 'preprocess_flye':
         flye_preprocess(args.prefix, args.WORK_DIR, args.LONG_READ_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.FLYE_TYPE, args.flye_args, args.minimap2_preset)
@@ -1510,11 +1754,12 @@ def main():
             run_skype, args.graph_depth, no_utg=True, option_02=args.option_02,
             reference=args.reference, benchmark_vcf_loc=args.benchmark_vcf_loc,
             full_assembly=args.full_assembly,
+            legacy=args.legacy,
         )
 
 
 if __name__ == "__main__":
     try:
         main()
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, SkypeArgumentError) as exc:
         raise SystemExit(f"{os.path.basename(__file__)}: error: {exc}") from None

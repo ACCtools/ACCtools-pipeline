@@ -35,11 +35,16 @@ python SKYPE.py run_flye <Working directory> pacbio-raw <clr.fastq(.gz) ...>
 python SKYPE.py run_flye <Working directory> nano-raw <ontr9.fastq(.gz) ...>
 ```
 
-## Forwarding SKYPE stage-02 options
+## Split stage 01/10 and legacy stage 02
 
-`--option_02` forwards a quoted string of additional arguments to
-`02_Build_Breakend_Graph_Limited.py`, the SKYPE breakend-graph construction
-stage. Multiple arguments must be placed in the same quoted string:
+The native pipeline runs `01_Preprocess_NClose.py` followed by
+`10_Graph_Find_Paths.py` by default. Use `--legacy` to run the unchanged
+combined `02_Build_Breakend_Graph_Limited.py` route instead. Full-assembly mode
+does not use the numbered native stages and rejects `--legacy`.
+
+`--option_02` remains the compatibility option for additional arguments.
+Without `--legacy`, ACCtools partitions its quoted tokens between stage 01 and
+stage 10. With `--legacy`, the string is forwarded unchanged to stage 02:
 
 ```bash
 python SKYPE.py analysis \
@@ -47,54 +52,47 @@ python SKYPE.py analysis \
   <Working directory> <contig.fa> <unitig.fa> <depth.win.stat.gz>
 ```
 
-The following public stage-02 arguments can be forwarded through
-`--option_02`:
+The following options are recognized in the split route:
 
 | Argument | Default | Role and notes |
 | --- | --- | --- |
-| `--disable_alt_ctg_simple` | Not set (rescue enabled) | Disables the default rescue of rearrangement candidates from primary contigs that were not otherwise retained. The rescue trims telomere-like terminal chunks, ignores fragments up to 10 kbp, selects chromosomes covering 90% of the remaining span, and removes nearby duplicate same-direction chromosome changes. |
+| `--exclude_nclose_list_loc <PATH>` | None | Stage 01 user exclusion list. |
+| `--check_nclose_count` / `--nclose_count_vaf_threshold <FLOAT>` | Disabled / `0.1` | Stage 01 raw-read junction VAF filter. |
 | `--add_indel_graph` | Disabled | Adds selected depth-supported type-4 indel rescue edges to the graph without increasing its dimensions. In VCF mode, DEL, DUP, and indel-like BND events are eligible; INS events are excluded. |
 | `--skip_bam_analysis` | Disabled | Skips raw-read BAM validation of translocation candidates and the removal of raw-read-supported virtual-inversion candidates. Do not combine it with `--check_nclose_count`, because the requested VAF filter cannot run when BAM analysis is skipped. |
-| `--karyotype_mode` | Enabled | Selects the default karyotype-oriented mode with aggressive filtering. It is mutually exclusive with `--variant_mode`. |
-| `--variant_mode` | Disabled | Selects depth-preserving variant analysis and disables karyotype-specific filtering and clustering. VCF input mode enables it automatically. |
 | `--vcf_filter_pass <FILTER> [FILTER ...]` | `PASS .` | In VCF input mode, replaces the accepted `FILTER` values. Matching is exact and case-sensitive; outside VCF mode this argument is ignored. |
+| `--verbose`, `--limit_combinations <PATH>` | Disabled / automatic | Stage 10 graph-search diagnostics or an exact limit pair. |
 
-Some stage-02 arguments are already constructed by ACCtools and should not be
-overridden through `--option_02`:
+Inputs and execution controls are constructed by ACCtools and are rejected in
+`--option_02` on the split route:
 
-| Stage-02 argument | Use in ACCtools instead |
+| Argument | Use in ACCtools instead |
 | --- | --- |
 | `-t`, `--thread` | Use the top-level `-t` / `--thread` option. |
 | `-d`, `--graph_depth` | Use the top-level `-d` / `--graph_depth` option. |
-| `--progress` | Use the top-level `--progress` option unless progress is needed only for stage 02. |
+| `--progress` | Use the top-level `--progress` option. |
 | `--vcf_input` | Use `--benchmark_vcf_loc`; ACCtools also prepares insertion-sequence alignments and selects VCF mode correctly. |
 | `--alt`, `--original_paf_loc` | Do not set these manually. ACCtools derives them from the contig/unitig alignments or the VCF insertion-sequence alignment. |
 
 For `run_hifi`, place `--option_02` before `<Working directory>` because every
 argument after the working directory is interpreted as an input read file.
 
-## Analysis modes
+Native restart stages are `0, 1, 10, 11, 21, 22, 23, 31` in the default route
+and `0, 2, 11, 21, 22, 23, 31` with `--legacy`. A nonzero restart validates the
+artifacts required from the skipped stages before launching subprocesses.
 
-The default is **karyotype mode**, which applies karyotype-oriented filtering and produces the base, `_filter`, and `_cluster` result sets. The modes below provide alternative inputs or filtering behavior. Because `run_hifi` treats every argument after the working directory as a read file, place all options before `<Working directory>`.
+## Analysis inputs
 
-### Variant mode
-
-Variant mode discovers rearrangements from the assembly alignments, as in the default workflow, but preserves depth-supported variant candidates by disabling the normal-chromosome prior and karyotype-specific filtering and clustering.
-
-```bash
-# Assembly-based variant analysis with PacBio HiFi reads
-python SKYPE.py run_hifi \
-  --option_02="--variant_mode" \
-  <Working directory> <hifi.fastq(.gz) ...>
-```
-
-Variant mode produces only the unsuffixed result set, including `virtual_sky.*`, `karyotype.txt`, `total_cov.*`, `SV_call_result.vcf`, and `SKYPE_result.bed`. It is also selected automatically for VCF input mode and when the graph contains more than 1,000 NClose nodes.
+The default native workflow discovers rearrangements from assembly alignments,
+constructs one observed-depth matrix, and fits every candidate column with one
+raw NNLS solve. It produces `SV_call_result.vcf`, `SKYPE_result.bed`,
+`nclose_report.tsv`, and `total_cov.*`. There are no karyotype/variant mode
+flags, normal-chromosome prior, post-NNLS filtering, or `_filter`/`_cluster`
+result sets.
 
 ### VCF input mode
 
-VCF input mode uses structural variants from an existing VCF instead of discovering NClose junctions from assembly alignments. The assembly alignment is still used for telomere/neotelomere anchors, and the mapped reads are still used to estimate depth and copy-number support. This mode automatically enables variant mode.
-
-The same mode flags can be used with `run_hifi`, `run_flye`, or `analysis`.
+VCF input mode uses structural variants from an existing VCF instead of discovering NClose junctions from assembly alignments. The assembly alignment is still used for telomere/neotelomere anchors, and the mapped reads are still used to estimate depth and copy-number support.
 
 ```bash
 # VCF and reads must use the same reference build (hs1 is the default)
@@ -127,8 +125,8 @@ Full-assembly mode uses each record of a complete genome assembly FASTA as one
 matrix path. It aligns the FASTA to the selected reference with minimap2 and
 alignasm, then passes the resulting `*.aln.paf` to the standalone
 `full_assembly_pipeline.py`. None of the normal numbered stage scripts are
-entered; their Virtual SKY and coverage drawing functions are shared as
-reusable renderers instead. It is mutually exclusive with
+entered; it retains its Virtual SKY/karyotype output through the reusable
+plotting modules and is mutually exclusive with
 `--benchmark_vcf_loc`.
 
 ```bash
