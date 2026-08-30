@@ -123,11 +123,17 @@ _SPLIT_STAGE_OPTION_SPECS = {
     "--disable_alt_ctg_simple": ("01", "--disable-alt-ctg-simple", 0),
     "--vcf-filter-pass": ("01", "--vcf-filter-pass", "+"),
     "--vcf_filter_pass": ("01", "--vcf-filter-pass", "+"),
+    "--debug-force-nclose": ("01", "--debug-force-nclose", 2),
+    "--debug_force_nclose": ("01", "--debug-force-nclose", 2),
     "--verbose": ("10", "--verbose", 0),
     "--add-indel-graph": ("10", "--add-indel-graph", 0),
     "--add_indel_graph": ("10", "--add-indel-graph", 0),
     "--limit-combinations": ("10", "--limit-combinations", 1),
     "--limit_combinations": ("10", "--limit-combinations", 1),
+}
+
+_REPEATABLE_SPLIT_OPTIONS = {
+    "--debug-force-nclose",
 }
 
 _ORCHESTRATOR_OWNED_SPLIT_OPTIONS = {
@@ -172,7 +178,7 @@ def split_stage_options(option_02):
                 f"{option}"
             )
         stage, canonical, arity = _SPLIT_STAGE_OPTION_SPECS[option]
-        if canonical in seen:
+        if canonical in seen and canonical not in _REPEATABLE_SPLIT_OPTIONS:
             raise SkypeArgumentError(
                 f"Duplicate --option_02 argument: {canonical}"
             )
@@ -184,6 +190,21 @@ def split_stage_options(option_02):
                     f"{option} does not accept a value"
                 )
             values = []
+        elif isinstance(arity, int) and arity > 1:
+            if separator:
+                raise SkypeArgumentError(
+                    f"{option} requires {arity} separate values"
+                )
+            if index + arity >= len(tokens):
+                raise SkypeArgumentError(
+                    f"{option} requires {arity} values"
+                )
+            values = tokens[index + 1:index + 1 + arity]
+            if any(value.startswith("-") for value in values):
+                raise SkypeArgumentError(
+                    f"{option} requires {arity} values"
+                )
+            index += arity
         elif separator:
             if not inline_value:
                 raise SkypeArgumentError(f"{option} requires a value")

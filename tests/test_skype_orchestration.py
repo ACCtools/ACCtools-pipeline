@@ -129,7 +129,10 @@ class NativeSkypeOrchestrationTests(unittest.TestCase):
     def test_split_options_are_partitioned_by_stage(self):
         stage01, stage10 = skype.split_stage_options(
             "--check_nclose_count --nclose_count_vaf_threshold 0.2 "
-            "--vcf_filter_pass PASS . --add_indel_graph "
+            "--vcf_filter_pass PASS . "
+            "--debug-force-nclose chr1:123:+ chr2:456:- "
+            "--debug_force_nclose chr3:789:- chr4:1000:+ "
+            "--add_indel_graph "
             "--limit_combinations limits.json"
         )
         self.assertEqual(
@@ -141,6 +144,12 @@ class NativeSkypeOrchestrationTests(unittest.TestCase):
                 "--vcf-filter-pass",
                 "PASS",
                 ".",
+                "--debug-force-nclose",
+                "chr1:123:+",
+                "chr2:456:-",
+                "--debug-force-nclose",
+                "chr3:789:-",
+                "chr4:1000:+",
             ],
         )
         self.assertEqual(
@@ -160,6 +169,15 @@ class NativeSkypeOrchestrationTests(unittest.TestCase):
         ):
             with self.subTest(value=value):
                 with self.assertRaisesRegex(ValueError, message):
+                    skype.split_stage_options(value)
+
+    def test_debug_force_nclose_requires_exactly_two_values(self):
+        for value in (
+            "--debug-force-nclose chr1:123:+",
+            "--debug-force-nclose=chr1:123:+ chr2:456:-",
+        ):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "requires 2"):
                     skype.split_stage_options(value)
 
     def test_add_indel_graph_is_sent_only_to_stage10_with_resources(self):
