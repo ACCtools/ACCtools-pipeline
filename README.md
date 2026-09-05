@@ -35,24 +35,25 @@ python SKYPE.py run_flye <Working directory> pacbio-raw <clr.fastq(.gz) ...>
 python SKYPE.py run_flye <Working directory> nano-raw <ontr9.fastq(.gz) ...>
 ```
 
-## Split stage 01/10 and legacy stage 02
+## Native stage 01/10 pipeline
 
 The native pipeline runs `01_Preprocess_NClose.py` followed by
-`10_Graph_Find_Paths.py` by default. Use `--legacy` to run the unchanged
-combined `02_Build_Breakend_Graph_Limited.py` route instead. Full-assembly mode
-does not use the numbered native stages and rejects `--legacy`.
+`10_Graph_Find_Paths.py`, then stages 11, 21, 22, 23, and 31.
+Full-assembly mode keeps its separate entry point.
 
-`--option_02` remains the compatibility option for additional arguments.
-Without `--legacy`, ACCtools partitions its quoted tokens between stage 01 and
-stage 10. With `--legacy`, the string is forwarded unchanged to stage 02:
+`--option_skype` (`--option-skype` also works) forwards a quoted option string
+to stage 01. SKYPE owns option routing in `skype_options.py`: stage 01 applies
+its preprocessing options and writes `skype_options.json` in the output
+directory. Stage 10 reads its options from that file. Each fresh stage-01 run
+replaces the settings, including when no extra options are supplied.
 
 ```bash
 python SKYPE.py analysis \
-  --option_02="--add_indel_graph" \
+  --option_skype="--add_indel_graph" \
   <Working directory> <contig.fa> <unitig.fa> <depth.win.stat.gz>
 ```
 
-The following options are recognized in the split route:
+The following options are recognized in the native route:
 
 | Argument | Default | Role and notes |
 | --- | --- | --- |
@@ -64,7 +65,7 @@ The following options are recognized in the split route:
 | `--verbose`, `--limit_combinations <PATH>` | Disabled / automatic | Stage 10 graph-search diagnostics or an exact limit pair. |
 
 Inputs and execution controls are constructed by ACCtools and are rejected in
-`--option_02` on the split route:
+`--option_skype` in native mode:
 
 | Argument | Use in ACCtools instead |
 | --- | --- |
@@ -74,12 +75,24 @@ Inputs and execution controls are constructed by ACCtools and are rejected in
 | `--vcf_input` | Use `--benchmark_vcf_loc`; ACCtools also prepares insertion-sequence alignments and selects VCF mode correctly. |
 | `--alt`, `--original_paf_loc` | Do not set these manually. ACCtools derives them from the contig/unitig alignments or the VCF insertion-sequence alignment. |
 
-For `run_hifi`, place `--option_02` before `<Working directory>` because every
+For `run_hifi`, place `--option_skype` before `<Working directory>` because every
 argument after the working directory is interpreted as an input read file.
 
-Native restart stages are `0, 1, 10, 11, 21, 22, 23, 31` in the default route
-and `0, 2, 11, 21, 22, 23, 31` with `--legacy`. A nonzero restart validates the
-artifacts required from the skipped stages before launching subprocesses.
+Native restart stages are `0, 1, 10, 11, 21, 22, 23, 31`. A nonzero restart
+validates the artifacts required from the skipped stages before launching
+subprocesses. A stage-10 restart reuses saved options; an explicit nonempty
+`--option_skype` replaces its graph options for that invocation. Preprocessing
+options require restarting at stage 01. Standalone stage 10 also accepts
+`--option_skype=""` to use default graph options, and its direct CLI options
+take precedence over saved settings. Missing settings files use defaults.
+
+From the workspace wrapper:
+
+```bash
+bash run.sh --option_skype="--skip_bam_analysis --add_indel_graph" HCC1937
+```
+
+`--simple` adds `--add_indel_graph` to the same option string.
 
 ## Analysis inputs
 
@@ -108,12 +121,12 @@ python SKYPE.py analysis \
   <Working directory> <contig.fa> <unitig.fa> <depth.win.stat.gz>
 ```
 
-By default, only records whose `FILTER` value is exactly `PASS` or `.` are evaluated. Replace that set through the stage-02 forwarding option when necessary:
+By default, only records whose `FILTER` value is exactly `PASS` or `.` are evaluated. Replace that set through the `--option_skype` option when necessary:
 
 ```bash
 python SKYPE.py run_hifi \
   --benchmark_vcf_loc <input.vcf> \
-  --option_02="--vcf_filter_pass PASS . Candidate" \
+  --option_skype="--vcf_filter_pass PASS . Candidate" \
   <Working directory> <hifi.fastq(.gz) ...>
 ```
 

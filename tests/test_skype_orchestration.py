@@ -4,7 +4,6 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 
 PIPELINE_ROOT = Path(__file__).resolve().parents[1]
@@ -81,39 +80,22 @@ class NativeSkypeOrchestrationTests(unittest.TestCase):
 
     def test_removed_native_stage_restarts_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
-            for stage in (24, 30):
+            for stage in (2, 24, 30):
                 with self.subTest(stage=stage):
                     with self.assertRaisesRegex(ValueError, "skype_start_at"):
                         self.run_printed_pipeline(
                             Path(temporary), skype_start_at=stage
                         )
 
-    def test_legacy_uses_only_combined_stage02(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            output = self.run_printed_pipeline(
-                Path(temporary), legacy=True
-            )
-        self.assertIn("02_Build_Breakend_Graph_Limited.py", output)
-        self.assertNotIn("01_Preprocess_NClose.py", output)
-        self.assertNotIn("10_Graph_Find_Paths.py", output)
 
-    def test_restart_numbers_are_mode_specific(self):
+    def test_native_restart_numbers(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            with self.assertRaisesRegex(ValueError, "split 01/10"):
+            with self.assertRaisesRegex(ValueError, "native 01/10"):
                 self.run_printed_pipeline(root, skype_start_at=2)
-            with self.assertRaisesRegex(ValueError, "legacy 02"):
-                self.run_printed_pipeline(
-                    root, legacy=True, skype_start_at=10
-                )
-
             stage10 = self.run_printed_pipeline(root, skype_start_at=10)
             self.assertIn("10_Graph_Find_Paths.py", stage10)
             self.assertNotIn("01_Preprocess_NClose.py", stage10)
-            legacy02 = self.run_printed_pipeline(
-                root, legacy=True, skype_start_at=2
-            )
-            self.assertIn("02_Build_Breakend_Graph_Limited.py", legacy02)
 
     def test_restart_reports_missing_prerequisite_artifacts(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -126,64 +108,13 @@ class NativeSkypeOrchestrationTests(unittest.TestCase):
                     print_args=False,
                 )
 
-    def test_split_options_are_partitioned_by_stage(self):
-        stage01, stage10 = skype.split_stage_options(
-            "--check_nclose_count --nclose_count_vaf_threshold 0.2 "
-            "--vcf_filter_pass PASS . "
-            "--debug-force-nclose chr1:123:+ chr2:456:- "
-            "--debug_force_nclose chr3:789:- chr4:1000:+ "
-            "--add_indel_graph "
-            "--limit_combinations limits.json"
-        )
-        self.assertEqual(
-            stage01,
-            [
-                "--check-nclose-count",
-                "--nclose-count-vaf-threshold",
-                "0.2",
-                "--vcf-filter-pass",
-                "PASS",
-                ".",
-                "--debug-force-nclose",
-                "chr1:123:+",
-                "chr2:456:-",
-                "--debug-force-nclose",
-                "chr3:789:-",
-                "chr4:1000:+",
-            ],
-        )
-        self.assertEqual(
-            stage10,
-            [
-                "--add-indel-graph",
-                "--limit-combinations",
-                "limits.json",
-            ],
-        )
 
-    def test_split_options_reject_unknown_owned_and_duplicate_flags(self):
-        for value, message in (
-            ("--unknown", "Unknown"),
-            ("--alt replacement.paf", "controlled"),
-            ("--verbose --verbose", "Duplicate"),
-        ):
-            with self.subTest(value=value):
-                with self.assertRaisesRegex(ValueError, message):
-                    skype.split_stage_options(value)
 
-    def test_debug_force_nclose_requires_exactly_two_values(self):
-        for value in (
-            "--debug-force-nclose chr1:123:+",
-            "--debug-force-nclose=chr1:123:+ chr2:456:-",
-        ):
-            with self.subTest(value=value):
-                with self.assertRaisesRegex(ValueError, "requires 2"):
-                    skype.split_stage_options(value)
 
-    def test_add_indel_graph_is_sent_only_to_stage10_with_resources(self):
+    def test_options_are_sent_to_stage01_with_stage10_resources(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = self.run_printed_pipeline(
-                Path(temporary), option_02="--add_indel_graph"
+                Path(temporary), option_skype="--add_indel_graph"
             )
         command_lines = output.splitlines()
         stage01 = next(
@@ -192,8 +123,8 @@ class NativeSkypeOrchestrationTests(unittest.TestCase):
         stage10 = next(
             line for line in command_lines if "10_Graph_Find_Paths.py" in line
         )
-        self.assertNotIn("--add-indel-graph", stage01)
-        self.assertIn("--add-indel-graph", stage10)
+        self.assertIn("--option_skype=--add_indel_graph", stage01)
+        self.assertNotIn("--option_skype", stage10)
         self.assertIn("--main-stat-path", stage10)
         self.assertIn("--censat-bed-path", stage10)
 
@@ -271,30 +202,6 @@ class NativeSkypeOrchestrationTests(unittest.TestCase):
         self.assertNotIn("23_run_nnls.py", command)
         self.assertNotIn("31_depth_analysis.py", command)
 
-    def test_full_assembly_rejects_legacy_route(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            with patch.object(
-                skype,
-                "resolve_reference_bundle",
-                return_value=reference_bundle(root),
-            ), self.assertRaisesRegex(ValueError, "--legacy"):
-                skype.analysis(
-                    "sample",
-                    str(root / "work"),
-                    str(root / "contig.fa"),
-                    str(root / "unitig.fa"),
-                    str(root / "depth.win.stat.gz"),
-                    1,
-                    str(root / "deps"),
-                    False,
-                    False,
-                    True,
-                    skype.run_skype,
-                    3,
-                    full_assembly=str(root / "assembly.fa"),
-                    legacy=True,
-                )
 
 
 if __name__ == "__main__":
