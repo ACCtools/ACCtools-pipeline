@@ -37,6 +37,7 @@ class NativeSkypeOrchestrationTests(unittest.TestCase):
             "ctg_aln_paf": str(root / "ctg.aln.paf"),
             "utg_paf": str(root / "utg.paf"),
             "utg_aln_paf": str(root / "utg.aln.paf"),
+            "unitig_fasta": str(root / "sample.r.fa"),
             "depth_loc": str(root / "sample.win.stat.gz"),
             "thread": 2,
             "dep_folder": str(root / "deps"),
@@ -140,6 +141,12 @@ class NativeSkypeOrchestrationTests(unittest.TestCase):
         self.assertIn("ctg.aln.paf", stage01)
         self.assertIn("--alt", stage01)
         self.assertIn("utg.aln.paf", stage01)
+        self.assertIn("--censat-endpoints-dir", stage01)
+        preparation = next(line for line in output.splitlines()
+                           if "censat_endpoints.py" in line)
+        self.assertIn("sample.r.fa", preparation)
+        self.assertIn("--reference", preparation)
+        self.assertNotIn("--force", preparation)
 
     def test_native_completion_uses_variant_outputs(self):
         with tempfile.TemporaryDirectory() as temporary:

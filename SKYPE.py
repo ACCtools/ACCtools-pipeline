@@ -1,6 +1,7 @@
 import os
 import filecmp
 import json
+import logging
 import pickle
 import shlex
 import shutil
@@ -499,7 +500,7 @@ def ensure_full_assembly_paf(
         reference_lengths,
         command,
     ):
-        print(f"Reusing full-assembly alignasm PAF: {paf_path}")
+        logging.info("Reusing full-assembly alignasm PAF")
         return paf_path, False
 
     output_dir = os.path.dirname(paf_path)
@@ -1024,7 +1025,8 @@ def run_full_assembly_skype(
 def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf,
               depth_loc, thread, dep_folder, is_progress, skype_force, graph_depth,
               option_skype="", skype_start_at=0, print_args=False,
-              benchmark_vcf_loc=None, reference_bundle=None, vcf_ins_aln_paf=None):
+              benchmark_vcf_loc=None, reference_bundle=None, vcf_ins_aln_paf=None,
+              unitig_fasta=None, alignment_force=False):
     # Execute the core SKYPE analysis scripts.
     dep_folder = os.path.abspath(dep_folder)
     skype_folder_loc = os.path.join(dep_folder, "SKYPE")
@@ -1149,7 +1151,24 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf,
                         os.path.abspath(vcf_ins_aln_paf),
                     ])
             else:
+                if unitig_fasta is None:
+                    raise SkypeArgumentError("Assembly preprocessing requires the effective unitig FASTA")
+                censat_dir = os.path.splitext(utg_paf)[0] + ".censat_endpoints"
+                prepare_cmd = [
+                    "python", os.path.join(skype_folder_loc, "censat_endpoints.py"),
+                    "--aln-paf", PAF_UTG_LOC,
+                    "--raw-paf", utg_paf,
+                    "--fasta", unitig_fasta,
+                    "--reference", reference_bundle.alignasm_ref,
+                    "--bed", RCS_BED,
+                    "--outdir", censat_dir,
+                    "-t", THREAD,
+                ]
+                if alignment_force:
+                    prepare_cmd.append("--force")
+                subprocess_run(prepare_cmd, check=True)
                 preprocess_cmd.extend([
+                    "--censat-endpoints-dir", censat_dir,
                     "--alt",
                     PAF_UTG_LOC,
                     "--original_paf_loc",
@@ -1239,7 +1258,7 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
     if full_assembly is not None:
         if benchmark_vcf_loc is not None:
             raise ValueError("--full_assembly and --benchmark_vcf_loc are mutually exclusive")
-        print(
+        logging.info(
             "Full-assembly mode: CONTIG and UNITIG inputs are ignored; "
             "only --full_assembly supplies matrix paths."
         )
@@ -1350,6 +1369,8 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
             skype_start_at=skype_start_at, print_args=print_args,
             benchmark_vcf_loc=benchmark_vcf_loc,
             reference_bundle=reference_bundle,
+            unitig_fasta=contig_loc,
+            alignment_force=force,
         )
 
     else:
@@ -1368,6 +1389,8 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
             skype_start_at=skype_start_at, print_args=print_args,
             benchmark_vcf_loc=benchmark_vcf_loc,
             reference_bundle=reference_bundle,
+            unitig_fasta=unitig_loc,
+            alignment_force=force,
         )
 
 def get_skype_parser():
@@ -1544,6 +1567,12 @@ def get_minimap2_preset_from_flye(FLYE_TYPE : str):
 
 def main():
     # Main function to parse arguments and execute the corresponding command.
+    logging.basicConfig(
+        format='%(asctime)s %(levelname)s:%(message)s',
+        level=logging.INFO,
+        datefmt='%m/%d/%Y %I:%M:%S %p',
+        force=True,
+    )
     parser = get_skype_parser()
     args = parser.parse_args()
 
@@ -1615,4 +1644,5 @@ if __name__ == "__main__":
     try:
         main()
     except (FileNotFoundError, SkypeArgumentError) as exc:
-        raise SystemExit(f"{os.path.basename(__file__)}: error: {exc}") from None
+        logging.error("%s", exc)
+        raise SystemExit(1) from None
