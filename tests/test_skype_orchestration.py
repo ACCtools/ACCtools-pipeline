@@ -1,9 +1,11 @@
 import contextlib
 import importlib.util
 import io
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 PIPELINE_ROOT = Path(__file__).resolve().parents[1]
@@ -12,6 +14,8 @@ SPEC = importlib.util.spec_from_file_location(
 )
 skype = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(skype)
+SKYPE_ROOT = PIPELINE_ROOT.parent / "deps" / "SKYPE"
+run_subprocess = subprocess.run
 
 
 def reference_bundle(root):
@@ -30,6 +34,10 @@ def reference_bundle(root):
 
 class NativeSkypeOrchestrationTests(unittest.TestCase):
     def run_printed_pipeline(self, root, **overrides):
+        dependency = root / "deps"
+        dependency.mkdir(exist_ok=True)
+        if not (dependency / "SKYPE").exists():
+            (dependency / "SKYPE").symlink_to(SKYPE_ROOT, target_is_directory=True)
         values = {
             "CELL_LINE": "sample",
             "PREFIX": str(root / "result"),
@@ -48,9 +56,19 @@ class NativeSkypeOrchestrationTests(unittest.TestCase):
             "reference_bundle": reference_bundle(root),
         }
         values.update(overrides)
+
+        def capture_pipeline(command, **kwargs):
+            result = run_subprocess(command, capture_output=True, text=True, **kwargs)
+            print(result.stdout, end="")
+            return result
+
         output = io.StringIO()
-        with contextlib.redirect_stdout(output):
+        with contextlib.redirect_stdout(output), patch.object(
+            skype.subprocess, "run", side_effect=capture_pipeline
+        ) as run:
             skype.run_skype(**values)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(Path(run.call_args.args[0][1]).name, "pipeline.py")
         return output.getvalue()
 
     def test_native_commands_skip_removed_stages(self):
@@ -83,31 +101,47 @@ class NativeSkypeOrchestrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             for stage in (2, 24, 30):
                 with self.subTest(stage=stage):
-                    with self.assertRaisesRegex(ValueError, "skype_start_at"):
+                    with self.assertRaises(subprocess.CalledProcessError) as failure:
                         self.run_printed_pipeline(
                             Path(temporary), skype_start_at=stage
                         )
+                    self.assertIn("skype_start_at", failure.exception.stderr)
 
 
     def test_native_restart_numbers(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            with self.assertRaisesRegex(ValueError, "native 01/10"):
+            with self.assertRaises(subprocess.CalledProcessError) as failure:
                 self.run_printed_pipeline(root, skype_start_at=2)
-            stage10 = self.run_printed_pipeline(root, skype_start_at=10)
-            self.assertIn("10_Graph_Find_Paths.py", stage10)
-            self.assertNotIn("01_Preprocess_NClose.py", stage10)
+            self.assertIn("native 01/10", failure.exception.stderr)
+            stages = {
+                1: "01_Preprocess_NClose.py",
+                10: "10_Graph_Find_Paths.py",
+                11: "11_Ref_Outlier_Contig_Modify.py",
+                21: "21_run_depth.py",
+                22: "22_save_matrix.py",
+                23: "23_run_nnls.py",
+                31: "31_depth_analysis.py",
+            }
+            for start in stages:
+                with self.subTest(start=start):
+                    output = self.run_printed_pipeline(root, skype_start_at=start)
+                    for stage, script in stages.items():
+                        if stage >= start:
+                            self.assertIn(script, output)
+                        else:
+                            self.assertNotIn(script, output)
 
     def test_restart_reports_missing_prerequisite_artifacts(self):
         with tempfile.TemporaryDirectory() as temporary:
-            with self.assertRaisesRegex(
-                ValueError, "01_nclose_data.pkl"
-            ):
+            with self.assertRaises(subprocess.CalledProcessError) as failure:
                 self.run_printed_pipeline(
                     Path(temporary),
                     skype_start_at=10,
                     print_args=False,
                 )
+            self.assertIn("01_nclose_data.pkl", failure.exception.stderr)
+            self.assertEqual(failure.exception.returncode, 1)
 
 
 

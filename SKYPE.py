@@ -8,6 +8,7 @@ import shutil
 import psutil
 import argparse
 import subprocess
+import sys
 import re
 import tempfile
 from dataclasses import dataclass
@@ -106,18 +107,6 @@ def normalize_extra_args(extra_args):
         return shlex.split(extra_args)
     return list(extra_args)
 
-
-def require_restart_inputs(prefix, stage, required_paths):
-    missing = [
-        os.path.join(prefix, path)
-        for path in required_paths
-        if not os.path.exists(os.path.join(prefix, path))
-    ]
-    if missing:
-        raise SkypeArgumentError(
-            f"Cannot restart at stage {stage}; missing prerequisite artifact(s): "
-            + ", ".join(missing)
-        )
 
 def sanitize_vcf_id(value):
     value = str(value) if value not in (None, "") else "unknown"
@@ -1027,212 +1016,51 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf,
               option_skype="", skype_start_at=0, print_args=False,
               benchmark_vcf_loc=None, reference_bundle=None, vcf_ins_aln_paf=None,
               unitig_fasta=None, alignment_force=False):
-    # Execute the core SKYPE analysis scripts.
+    """Delegate native stage execution to the SKYPE repository."""
     dep_folder = os.path.abspath(dep_folder)
-    skype_folder_loc = os.path.join(dep_folder, "SKYPE")
     if reference_bundle is None:
         reference_bundle = resolve_reference_bundle(dep_folder, REFERENCE_HS1)
 
-    valid_start_stages = {0, 1, 10, 11, 21, 22, 23, 31}
-    if skype_start_at not in valid_start_stages:
-        valid_text = ", ".join(map(str, sorted(valid_start_stages)))
-        raise SkypeArgumentError(
-            f"Native --skype_start_at must be one of {valid_text} "
-            "for the native 01/10 route"
-        )
-
-    TEL_BED = reference_bundle.tel_bed
-    CHR_FAI = reference_bundle.chr_fai
-    RPT_BED = reference_bundle.rpt_bed
-    RCS_BED = reference_bundle.rcs_bed
-    CYT_BED = reference_bundle.cyt_bed
-    REF_STAT_LOC = reference_bundle.ref_stat
-
-
-    # python to bash variable
-    MAIN_STAT_LOC = depth_loc
-    MAIN_STAT_NORM_LOC = depth_loc if REF_STAT_LOC is None else depth_loc.replace('.win.stat.gz', '_normalized.win.stat.gz')
-    PAF_LOC = ctg_aln_paf
-    PAF_UTG_LOC = utg_aln_paf
-    graph_paf_loc = PAF_UTG_LOC if benchmark_vcf_loc else PAF_LOC
-    PPC_PAF_LOC = os.path.join(PREFIX, f"{os.path.basename(graph_paf_loc)}.ppc.paf")
-    READ_BAM_LOC = os.path.join(os.path.dirname(depth_loc), f'{CELL_LINE}.bam')
-    SORTED_READ_BAM_LOC = os.path.join(os.path.dirname(depth_loc), f'{CELL_LINE}.sorted.bam')
-    if os.path.isfile(SORTED_READ_BAM_LOC):
-        READ_BAM_LOC = SORTED_READ_BAM_LOC
-
-    THREAD = str(thread)
-    PROGRESS = ["--progress"] if is_progress else []
-
-    subprocess_run = subprocess_print if print_args else subprocess.run
-    EXTRA_SKYPE = ["--option_skype=" + shlex.join(normalize_extra_args(option_skype))]
-
-    expected_outputs = [
-        os.path.join(PREFIX, "total_cov.png"),
-        os.path.join(PREFIX, "nclose_report.tsv"),
+    command = [
+        sys.executable,
+        os.path.join(dep_folder, "SKYPE", "pipeline.py"),
+        "--cell-line", CELL_LINE,
+        "--prefix", PREFIX,
+        "--ctg-paf", ctg_paf,
+        "--ctg-aln-paf", ctg_aln_paf,
+        "--utg-paf", utg_paf,
+        "--utg-aln-paf", utg_aln_paf,
+        "--depth-loc", depth_loc,
+        "--dep-folder", dep_folder,
+        "--alignasm-ref", reference_bundle.alignasm_ref,
+        "--chr-fai", reference_bundle.chr_fai,
+        "--tel-bed", reference_bundle.tel_bed,
+        "--rpt-bed", reference_bundle.rpt_bed,
+        "--rcs-bed", reference_bundle.rcs_bed,
+        "--cyt-bed", reference_bundle.cyt_bed,
+        "-t", str(thread),
+        "-d", str(graph_depth),
+        "--skype-start-at", str(skype_start_at),
+        "--option-skype=" + shlex.join(normalize_extra_args(option_skype)),
     ]
-    if benchmark_vcf_loc:
-        expected_outputs.append(os.path.join(PREFIX, "SV_benchmark_result.vcf"))
-    else:
-        expected_outputs.extend([
-            os.path.join(PREFIX, "SV_call_result.vcf"),
-            os.path.join(PREFIX, "SKYPE_result.bed"),
-        ])
+    for option, value in (
+        ("--ref-stat", reference_bundle.ref_stat),
+        ("--benchmark-vcf-loc", benchmark_vcf_loc),
+        ("--vcf-ins-aln-paf", vcf_ins_aln_paf),
+        ("--unitig-fasta", unitig_fasta),
+    ):
+        if value is not None:
+            command.extend([option, value])
+    for option, enabled in (
+        ("--progress", is_progress),
+        ("--skype-force", skype_force),
+        ("--alignment-force", alignment_force),
+        ("--print-args", print_args),
+    ):
+        if enabled:
+            command.append(option)
+    subprocess.run(command, check=True)
 
-    if not print_args and skype_start_at > 0:
-        if REF_STAT_LOC is not None and not os.path.isfile(MAIN_STAT_NORM_LOC):
-            raise SkypeArgumentError(
-                "Cannot restart SKYPE because the normalized depth file is "
-                f"missing: {MAIN_STAT_NORM_LOC}"
-            )
-        restart_requirements = {
-            10: [
-                "01_nclose_data.pkl",
-                "pipeline_input.pkl",
-                os.path.basename(PPC_PAF_LOC),
-            ],
-            11: [
-                "path_data.pkl",
-                "paf_file_path.pkl",
-                os.path.basename(PPC_PAF_LOC),
-            ],
-            21: [
-                "path_data.pkl",
-                "11_ref_ratio_outliers",
-                os.path.basename(PPC_PAF_LOC),
-            ],
-            22: ["path_data.pkl", "contig_pat_vec_data.pkl"],
-            23: ["23_input.pkl"],
-            31: [
-                "B.npy",
-                "weight.npy",
-                "predict_B.npy",
-                "contig_pat_vec_data.pkl",
-                "tot_loc_list.pkl",
-            ],
-        }
-        if skype_start_at in restart_requirements:
-            require_restart_inputs(
-                PREFIX,
-                skype_start_at,
-                restart_requirements[skype_start_at],
-            )
-
-    if not all(os.path.isfile(path) for path in expected_outputs) or skype_force or skype_start_at > 0:
-        if skype_start_at <= 0 and REF_STAT_LOC is not None:
-            subprocess_run([
-                "python", os.path.join(skype_folder_loc, "00_depth_norm.py"),
-                MAIN_STAT_LOC, REF_STAT_LOC, RCS_BED
-            ], check=True)
-
-        if skype_start_at <= 1:
-            preprocess_cmd = [
-                "python",
-                os.path.join(skype_folder_loc, "01_Preprocess_NClose.py"),
-                graph_paf_loc,
-                CHR_FAI,
-                TEL_BED,
-                RPT_BED,
-                RCS_BED,
-                MAIN_STAT_NORM_LOC,
-                PREFIX,
-                READ_BAM_LOC,
-                "-t",
-                THREAD,
-            ]
-            if benchmark_vcf_loc:
-                preprocess_cmd.extend([
-                    "--vcf_input",
-                    os.path.abspath(benchmark_vcf_loc),
-                ])
-                if vcf_ins_aln_paf is not None:
-                    preprocess_cmd.extend([
-                        "--alt",
-                        os.path.abspath(vcf_ins_aln_paf),
-                    ])
-            else:
-                if unitig_fasta is None:
-                    raise SkypeArgumentError("Assembly preprocessing requires the effective unitig FASTA")
-                censat_dir = os.path.splitext(utg_paf)[0] + ".censat_endpoints"
-                prepare_cmd = [
-                    "python", os.path.join(skype_folder_loc, "censat_endpoints.py"),
-                    "--aln-paf", PAF_UTG_LOC,
-                    "--raw-paf", utg_paf,
-                    "--fasta", unitig_fasta,
-                    "--reference", reference_bundle.alignasm_ref,
-                    "--bed", RCS_BED,
-                    "--outdir", censat_dir,
-                    "-t", THREAD,
-                ]
-                if alignment_force:
-                    prepare_cmd.append("--force")
-                subprocess_run(prepare_cmd, check=True)
-                preprocess_cmd.extend([
-                    "--censat-endpoints-dir", censat_dir,
-                    "--alt",
-                    PAF_UTG_LOC,
-                    "--original_paf_loc",
-                    ctg_paf,
-                    utg_paf,
-                ])
-            subprocess_run(preprocess_cmd + EXTRA_SKYPE + PROGRESS, check=True)
-
-        if skype_start_at <= 10:
-            graph_cmd = [
-                "python",
-                os.path.join(skype_folder_loc, "10_Graph_Find_Paths.py"),
-                os.path.join(PREFIX, "01_nclose_data.pkl"),
-                CHR_FAI,
-                PREFIX,
-                "-t",
-                THREAD,
-                "-d",
-                str(graph_depth),
-                "--main-stat-path",
-                MAIN_STAT_NORM_LOC,
-                "--censat-bed-path",
-                RCS_BED,
-            ]
-            if skype_start_at == 10 and option_skype:
-                graph_cmd.extend(EXTRA_SKYPE)
-            subprocess_run(graph_cmd + PROGRESS, check=True)
-
-        if skype_start_at <= 11:
-            subprocess_run([
-                "python", os.path.join(skype_folder_loc, "11_Ref_Outlier_Contig_Modify.py"),
-                CHR_FAI, PPC_PAF_LOC, PREFIX,
-            ], check=True)
-
-        if skype_start_at <= 21:
-            free_mem_gb = psutil.virtual_memory().available * MEM_SAFE_RATIO / (1024 ** 3)
-            thread_lim = int(free_mem_gb / 6)
-
-            subprocess_run([
-                "python", os.path.join(skype_folder_loc, "21_run_depth.py"),
-                PPC_PAF_LOC, PREFIX,
-                "--pandepth_loc", os.path.join(dep_folder, 'PanDepth', 'bin', 'pandepth'),
-                "-t", str(max(min(thread_lim, thread), 1))
-            ] + PROGRESS, check=True)
-
-        if skype_start_at <= 22:
-            subprocess_run([
-                "python", os.path.join(skype_folder_loc, "22_save_matrix.py"),
-                RCS_BED, MAIN_STAT_NORM_LOC,
-                PREFIX, "-t", THREAD
-            ] + PROGRESS, check=True)
-
-        if skype_start_at <= 23:
-            subprocess_run([
-                "python", "23_run_nnls.py", os.path.abspath(PREFIX)
-            ], check=True, cwd=skype_folder_loc)
-
-        if skype_start_at <= 31:
-            subprocess_run([
-                "python", os.path.join(skype_folder_loc, "31_depth_analysis.py"),
-                RCS_BED, PPC_PAF_LOC, MAIN_STAT_NORM_LOC,
-                TEL_BED, CHR_FAI, CYT_BED, PREFIX, "-t", THREAD
-            ] + PROGRESS, check=True)
-        
 
 def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_folder,
              is_progress, force, skype_force, run_skype_func, graph_depth,
