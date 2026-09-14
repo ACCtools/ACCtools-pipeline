@@ -9,7 +9,7 @@ Please make anaconda environment to use SKYPE pipeline
 mamba create -n skype -c conda-forge -c bioconda \
 python=3.12 gxx cmake=3 zip psutil aria2 pyfaidx hifiasm flye minimap2 samtools \
 "numpy<2" scipy matplotlib tqdm pycirclize=1.9 pandas networkx graph-tool=2.98 \
-seaborn h5py vcfpy scikit-learn=1.6 
+seaborn h5py vcfpy scikit-learn=1.6 pysam numba
 
 mamba activate skype
 pip install juliacall adelie
@@ -38,7 +38,11 @@ python SKYPE.py run_flye <Working directory> nano-raw <ontr9.fastq(.gz) ...>
 ## Native stage 01/10 pipeline
 
 The native pipeline runs `01_Preprocess_NClose.py` followed by
-`10_Graph_Find_Paths.py`, then stages 11, 21, 22, 23, and 31.
+`10_Graph_Find_Paths.py`, then stages 11, 21, 22, 23, optional raw-read rescue
+in stage 24, and stage 31. Assembly input defaults to `--raw-rescue-method read`;
+`olc` selects SKYPE's directly implemented local OLC and `off` disables rescue.
+Pass these through `--option_skype`. After native compression retains a new
+NClose, SKYPE reruns stages 10--23 once. VCF input defaults to rescue off.
 Full-assembly mode keeps its separate entry point.
 
 `--option_skype` (`--option-skype` also works) forwards a quoted option string
@@ -78,7 +82,7 @@ Inputs and execution controls are constructed by ACCtools and are rejected in
 For `run_hifi`, place `--option_skype` before `<Working directory>` because every
 argument after the working directory is interpreted as an input read file.
 
-Native restart stages are `0, 1, 10, 11, 21, 22, 23, 31`. A nonzero restart
+Native restart stages are `0, 1, 10, 11, 21, 22, 23, 24, 31`. A nonzero restart
 validates the artifacts required from the skipped stages before launching
 subprocesses. A stage-10 restart reuses saved options; an explicit nonempty
 `--option_skype` replaces its graph options for that invocation. Preprocessing

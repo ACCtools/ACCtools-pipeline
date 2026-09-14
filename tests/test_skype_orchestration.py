@@ -99,7 +99,7 @@ class NativeSkypeOrchestrationTests(unittest.TestCase):
 
     def test_removed_native_stage_restarts_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
-            for stage in (2, 24, 30):
+            for stage in (2, 30):
                 with self.subTest(stage=stage):
                     with self.assertRaises(subprocess.CalledProcessError) as failure:
                         self.run_printed_pipeline(
@@ -121,6 +121,7 @@ class NativeSkypeOrchestrationTests(unittest.TestCase):
                 21: "21_run_depth.py",
                 22: "22_save_matrix.py",
                 23: "23_run_nnls.py",
+                24: "24_raw_nclose_rescue.py",
                 31: "31_depth_analysis.py",
             }
             for start in stages:
