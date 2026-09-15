@@ -45,6 +45,17 @@ Pass these through `--option_skype`. After native compression retains a new
 NClose, SKYPE reruns stages 10--23 once. VCF input defaults to rescue off.
 Full-assembly mode keeps its separate entry point.
 
+All reference-based minimap2 alignments share indexes under
+`<dependency_loc>/reference_indexes/`: read-depth mapping, assembly/gap mapping
+(including full-assembly and VCF insertion sequences), CEN-SAT preparation,
+and raw-read/OLC rescue. An index is built only when an alignment is needed.
+Cache keys include the resolved FASTA path, size and modification time,
+minimap2 preset, and minimap2 version. Matching calls reuse the index;
+concurrent runs wait for the same build to finish. Index build logs and
+reference metadata are stored beside the `.mmi` file. SKYPE's
+`reference_indexes.py` supplies the common implementation. An explicit
+`--reference-index` inside `--raw-rescue-options` still takes precedence.
+
 `--option_skype` (`--option-skype` also works) forwards a quoted option string
 to stage 01. SKYPE owns option routing in `skype_options.py`: stage 01 applies
 its preprocessing options and writes `skype_options.json` in the output

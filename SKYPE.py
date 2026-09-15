@@ -1,5 +1,6 @@
 import os
 import filecmp
+import importlib.util
 import json
 import logging
 import pickle
@@ -314,6 +315,18 @@ def file_signature(path):
         "size": int(stat.st_size),
         "mtime_ns": int(stat.st_mtime_ns),
     }
+
+
+def ensure_reference_index(reference, preset, dep_folder, thread):
+    """Use the shared SKYPE cache implementation under this dependency root."""
+    module_path = os.path.join(os.path.abspath(dep_folder), "SKYPE", "reference_indexes.py")
+    spec = importlib.util.spec_from_file_location("skype_reference_indexes", module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.ensure_reference_index(
+        reference, preset, thread,
+        cache_dir=os.path.join(os.path.abspath(dep_folder), "reference_indexes"),
+    )
 
 
 def validate_full_assembly_paf_content(
@@ -720,9 +733,10 @@ def hifi_preprocess(
 
     if not os.path.isfile(os.path.join(depth_folder, f'{CELL_LINE}.win.stat.gz')) or force:
         if not os.path.isfile(sorted_bam_file) or force:
+            reference_index = ensure_reference_index(refseq, minimap2_preset, dep_folder, thread)
             subprocess.run([
                 "minimap2", "-x", minimap2_preset, "-K", "10G", "-t", THREAD,
-                "-a", refseq] + hifi_fastq + ["-o", sam_file
+                "-a", reference_index] + hifi_fastq + ["-o", sam_file
             ], check=True)
 
             depth_bam_file = sort_sam_and_index_bam_with_samtools(sam_file, sorted_bam_file, THREAD, force)
@@ -790,9 +804,10 @@ def flye_preprocess(
         
     if not os.path.isfile(os.path.join(depth_folder, f'{CELL_LINE}.win.stat.gz')) or force:
         if not os.path.isfile(sorted_bam_file) or force:
+            reference_index = ensure_reference_index(refseq, minimap2_preset, dep_folder, thread)
             subprocess.run([
                 "minimap2", "-x", minimap2_preset, "-K", "10G", "-t", THREAD,
-                "-a", refseq] + hifi_fastq + ["-o", sam_file
+                "-a", reference_index] + hifi_fastq + ["-o", sam_file
             ], check=True)
 
             depth_bam_file = sort_sam_and_index_bam_with_samtools(sam_file, sorted_bam_file, THREAD, force)
@@ -863,6 +878,8 @@ def is_nonempty_file(path):
 def run_alignasm(PREFIX_PATH, thread, fa_loc, ref_loc, ALIGNASM_LOC, force):
     # Run the alignasm tool for sequence alignment.
     THREAD = str(thread)
+    # alignasm is installed at <dependency root>/alignasm/build/alignasm.
+    dep_folder = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(ALIGNASM_LOC))))
 
     paf_file = f"{PREFIX_PATH}.paf"
     pat_fa_file = f"{PREFIX_PATH}.pat.fa"
@@ -875,7 +892,8 @@ def run_alignasm(PREFIX_PATH, thread, fa_loc, ref_loc, ALIGNASM_LOC, force):
             subprocess.run([
                 "minimap2", "--cs", "-t", THREAD, "-x", "asm20",
                 "--no-long-join", "-r2k", "-K10G",
-                ref_loc, fa_loc, "-o", paf_file
+                ensure_reference_index(ref_loc, "asm20", dep_folder, thread),
+                fa_loc, "-o", paf_file
             ], check=True)
 
         if force or not os.path.isfile(alt_paf_file):
@@ -888,7 +906,8 @@ def run_alignasm(PREFIX_PATH, thread, fa_loc, ref_loc, ALIGNASM_LOC, force):
                 subprocess.run([
                     "minimap2", "--cs", "-t", THREAD, "-x", "asm20",
                     "-r2k", "-K10G",
-                    ref_loc, pat_fa_file, "-o", alt_paf_file
+                    ensure_reference_index(ref_loc, "asm20", dep_folder, thread),
+                    pat_fa_file, "-o", alt_paf_file
                 ], check=True)
             else:
                 open(pat_fa_file, "wt").close()
@@ -1033,6 +1052,7 @@ def run_skype(CELL_LINE, PREFIX, ctg_paf, ctg_aln_paf, utg_paf, utg_aln_paf,
         "--depth-loc", depth_loc,
         "--dep-folder", dep_folder,
         "--alignasm-ref", reference_bundle.alignasm_ref,
+        "--reference-index-cache", os.path.join(dep_folder, "reference_indexes"),
         "--chr-fai", reference_bundle.chr_fai,
         "--tel-bed", reference_bundle.tel_bed,
         "--rpt-bed", reference_bundle.rpt_bed,
