@@ -24,6 +24,11 @@ _provenance_spec = importlib.util.spec_from_file_location(
 )
 alignment_provenance = importlib.util.module_from_spec(_provenance_spec)
 _provenance_spec.loader.exec_module(alignment_provenance)
+_hs1_reference_spec = importlib.util.spec_from_file_location(
+    "acctools_hs1_reference", os.path.join(SCRIPT_DIR, "hs1_reference.py")
+)
+hs1_reference = importlib.util.module_from_spec(_hs1_reference_spec)
+_hs1_reference_spec.loader.exec_module(hs1_reference)
 MEM_SAFE_RATIO = 0.8
 
 REFERENCE_HS1 = "hs1"
@@ -68,6 +73,7 @@ class ReferenceBundle:
     rcs_bed: str
     cyt_bed: str
     ref_stat: Optional[str]
+    alignment_cache_namespace: Optional[str] = None
 
 
 def get_reference_name(reference):
@@ -83,19 +89,53 @@ def depth_dir_name(reference):
 
 
 def alignasm_dir_name(reference):
-    return reference_stage_dir(reference, HS1_ALIGNASM_DIR, HG38_ALIGNASM_DIR)
+    return reference_content_dir(
+        reference, reference_stage_dir(reference, HS1_ALIGNASM_DIR, HG38_ALIGNASM_DIR)
+    )
+
+
+def reference_content_dir(reference, stage_dir):
+    namespace = getattr(reference, "alignment_cache_namespace", None)
+    return os.path.join(stage_dir, namespace) if namespace else stage_dir
 
 
 def skype_dir_name(reference):
-    return reference_stage_dir(reference, HS1_SKYPE_DIR, HG38_SKYPE_DIR)
+    return reference_content_dir(
+        reference, reference_stage_dir(reference, HS1_SKYPE_DIR, HG38_SKYPE_DIR)
+    )
 
 
 def full_assembly_skype_dir_name(reference):
-    return reference_stage_dir(
-        reference,
-        HS1_FULL_ASSEMBLY_SKYPE_DIR,
-        HG38_FULL_ASSEMBLY_SKYPE_DIR,
+    return reference_content_dir(
+        reference, reference_stage_dir(
+            reference, HS1_FULL_ASSEMBLY_SKYPE_DIR, HG38_FULL_ASSEMBLY_SKYPE_DIR,
+        ),
     )
+
+
+def prepare_reference_output_dir(output_dir, reference):
+    """Refuse legacy or differently bound results in an explicit output directory."""
+    namespace = getattr(reference, "alignment_cache_namespace", None)
+    if not namespace:
+        return
+    expected = {"schema": "ACCtools.reference_output_namespace.v1",
+                "cache_namespace": namespace,
+                "alignasm_reference": os.path.realpath(reference.alignasm_ref)}
+    marker = os.path.join(output_dir, "reference_namespace.json")
+    if os.path.isfile(marker):
+        try:
+            with open(marker, encoding="utf-8") as handle:
+                if json.load(handle) == expected:
+                    return
+        except (OSError, ValueError):
+            pass
+        raise ValueError(f"Output directory belongs to a different reference: {output_dir}")
+    if os.path.exists(output_dir) and os.listdir(output_dir):
+        raise ValueError(
+            f"Output directory has unbound existing results; choose a fresh directory: {output_dir}"
+        )
+    os.makedirs(output_dir, exist_ok=True)
+    alignment_provenance.write_json_atomic(marker, expected)
 
 
 def gfa_to_fa(gfa_file, out_fa):
@@ -308,9 +348,11 @@ def full_assembly_cache_stem(assembly_path):
 
 def full_assembly_paf_cache_path(assembly_path, reference):
     assembly_path = os.path.abspath(assembly_path)
+    namespace = getattr(reference, "alignment_cache_namespace", None)
+    reference_tag = get_reference_name(reference) + ("." + namespace if namespace else "")
     return os.path.join(
         os.path.dirname(assembly_path),
-        f"{full_assembly_cache_stem(assembly_path)}.{get_reference_name(reference)}.aln.paf",
+        f"{full_assembly_cache_stem(assembly_path)}.{reference_tag}.aln.paf",
     )
 
 
@@ -638,9 +680,14 @@ def resolve_reference_bundle(
     if reference != REFERENCE_HS1:
         raise ValueError(f"Unsupported reference: {reference}")
 
+    prepared = hs1_reference.prepare_reference(
+        os.path.join(dep_folder, "chm13v2.0.fa"),
+        os.path.join(public_data, "chm13v2.0.fa.fai"),
+        os.path.join(dep_folder, "reference_sets"),
+    )
     return ReferenceBundle(
         name=REFERENCE_HS1,
-        alignasm_ref=os.path.join(dep_folder, 'chm13v2.0_maskedY_noM.fa'),
+        alignasm_ref=prepared["fasta"],
         depth_ref=os.path.join(dep_folder, 'chm13v2.0.fa'),
         chr_fai=os.path.join(public_data, "chm13v2.0.fa.fai"),
         tel_bed=os.path.join(public_data, "chm13v2.0_telomere.bed"),
@@ -648,6 +695,7 @@ def resolve_reference_bundle(
         rcs_bed=os.path.join(public_data, "chm13v2.0_censat_v2.1.m.bed"),
         cyt_bed=os.path.join(public_data, "chm13v2.0_cytobands_allchrs.bed"),
         ref_stat=os.path.join(public_data, "CHM13.win.stat.gz"),
+        alignment_cache_namespace=prepared["cache_namespace"],
     )
 
 def get_samtools_sort_memory_limit(thread):
@@ -839,14 +887,7 @@ def install_dependency(dep_folder, force):
     
     # download reference
     subprocess.run(["wget", "-nv", "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/analysis_set/chm13v2.0.fa.gz"], cwd=dep_folder, check=True)
-    subprocess.run(["wget", "-nv", "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/analysis_set/chm13v2.0_maskedY.fa.gz"], cwd=dep_folder, check=True)
-
     subprocess.run(["pigz", "-d", "chm13v2.0.fa.gz"], cwd=dep_folder, check=True)
-    subprocess.run(["pigz", "-d", "chm13v2.0_maskedY.fa.gz"], cwd=dep_folder, check=True)
-
-    # Remove chrM
-    subprocess.run("faidx chm13v2.0_maskedY.fa -g chrM --invert-match -o chm13v2.0_maskedY_noM.fa", cwd=dep_folder, shell=True, check=True)
-    os.remove(os.path.join(dep_folder, 'chm13v2.0_maskedY.fa'))
 
     subprocess.run("git clone https://github.com/ACCtools/PanDepth && "\
                    "cd PanDepth && make", cwd=dep_folder, shell=True, check=True)
@@ -858,6 +899,7 @@ def install_dependency(dep_folder, force):
                    "cmake --build build", cwd=dep_folder, shell=True, check=True)
     
     subprocess.run("git clone https://github.com/ACCtools/SKYPE", cwd=dep_folder, shell=True, check=True)
+    resolve_reference_bundle(dep_folder, REFERENCE_HS1)
 
 def update_dependency(dep_folder):
     # Update existing dependencies to the latest versions from their repositories.
@@ -1205,6 +1247,8 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
             else skype_dir_name(reference_bundle)
         )
         skype_dir = os.path.join(PREFIX, output_dir_name)
+
+    prepare_reference_output_dir(skype_dir, reference_bundle)
 
     if full_assembly is not None:
         if benchmark_vcf_loc is not None:

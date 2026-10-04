@@ -51,7 +51,8 @@ result, plus the exact command. A change to these inputs reruns alignasm;
 unchanged inputs reuse the result. Existing results without this manifest are
 recomputed once. A failed run cannot publish a valid manifest. This check
 covers processing of existing PAFs: use top-level `--force` when changing the
-assembly FASTA or mapping reference so the upstream minimap2 PAFs are rebuilt.
+assembly FASTA so the upstream minimap2 PAFs are rebuilt. Versioned hs1
+references select separate alignment caches automatically.
 `--skype_force` restarts SKYPE stages and does not force upstream mappings.
 
 Fresh primary and alternate assembly alignment generation also writes
@@ -79,6 +80,43 @@ reference metadata are stored beside the `.mmi` file. SKYPE's
 `reference_indexes.py` supplies that shared implementation; ACC's
 `alignment_provenance.py` supplies the content-bound assembly cache. An explicit
 `--reference-index` inside `--raw-rescue-options` still takes precedence.
+
+## Canonical hs1 alignment reference
+
+New hs1 runs construct their alignment reference from the canonical full
+`<dependency_loc>/chm13v2.0.fa`. The checked-in `hs1_reference_recipe.json`
+binds that file by SHA256 and declares the chrY masks as zero-based, half-open
+intervals `[0, 2458320)` and `[62122809, 62460029)`. Masking replaces bases with
+`N`; `chrM` is omitted. Every retained chromosome keeps its canonical sequence
+length and coordinates, including chrY at 62,460,029 bases. The full reference
+used for depth and the public model FAI stay unchanged.
+
+`hs1_reference.py` writes a new FASTA, its FAI, and `reference_manifest.json`
+under `<dependency_loc>/reference_sets/hs1_ypar_noM_v1/<content key>/`.
+The manifest binds the source, model FAI, masking recipe, builder, and output
+content, and records each contig's sequence hashes and number of masked bases.
+A build fails if the source dictionary disagrees with the model FAI, masks
+are invalid, inputs change during construction, or an existing version fails
+verification. There is no overwrite option; `--force` does not replace a
+reference version. Existing FASTAs and indexes remain in place.
+
+The reference namespace appears below `20_alignasm`, `30_skype`, and
+`30_skype_full_assembly`, and in full-assembly PAF cache filenames. A new
+reference therefore receives distinct alignment, result, and reference-index
+caches. An explicit `--skype_dir` must be empty or already bound to that exact
+reference namespace; an unbound legacy result directory is refused. Use a
+fresh analysis directory when comparing this reference policy with a frozen
+experiment. This correction establishes consistent inputs; it does not by
+itself demonstrate an alignment or inference accuracy gain.
+
+The reference can also be prepared independently:
+
+```bash
+python hs1_reference.py \
+  --source-fasta <dependency_loc>/chm13v2.0.fa \
+  --model-fai <dependency_loc>/SKYPE/public_data/chm13v2.0.fa.fai \
+  --output-root <dependency_loc>/reference_sets
+```
 
 `--option_skype` (`--option-skype` also works) forwards a quoted option string
 to stage 01. SKYPE owns option routing in `skype_options.py`: stage 01 applies
@@ -169,7 +207,7 @@ python SKYPE.py run_hifi \
   <Working directory> <hifi.fastq(.gz) ...>
 ```
 
-The main VCF-mode result is `<SKYPE output directory>/SV_benchmark_result.vcf`. It preserves the input records and adds `SKYPE_CN` and `SKYPE_STATUS`; records with side-specific measurements also receive `SKYPE_CN_DETAIL` and `SKYPE_STATUS_DETAIL`. The default SKYPE output directory is `<Working directory>/30_skype` for `hs1` and `<Working directory>/31_skype_hg38` for `hg38`. Parsing diagnostics are written to `vcf_mode_summary.json`, `vcf_mode_summary.tsv`, `vcf_mode_skipped_records.tsv`, and `vcf_mode_orientation_mismatches.tsv` in the same directory.
+The main VCF-mode result is `<SKYPE output directory>/SV_benchmark_result.vcf`. It preserves the input records and adds `SKYPE_CN` and `SKYPE_STATUS`; records with side-specific measurements also receive `SKYPE_CN_DETAIL` and `SKYPE_STATUS_DETAIL`. The default SKYPE output directory is `<Working directory>/30_skype/<reference namespace>` for `hs1` and `<Working directory>/31_skype_hg38` for `hg38`. Parsing diagnostics are written to `vcf_mode_summary.json`, `vcf_mode_summary.tsv`, `vcf_mode_skipped_records.tsv`, and `vcf_mode_orientation_mismatches.tsv` in the same directory.
 
 ### Full-assembly input mode
 

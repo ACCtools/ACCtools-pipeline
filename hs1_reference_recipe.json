@@ -1,0 +1,10 @@
+{
+  "schema": "ACCtools.hs1_reference_recipe.v1",
+  "name": "hs1_ypar_noM_v1",
+  "coordinate_system": "0-based-half-open",
+  "source_fasta_sha256": "15a4ba1246f6021a89699bf5083da7f2bad3f79c86acd7bc1eb0ca3a13164e85",
+  "required_contig_lengths": {"chrY": 62460029, "chrM": 16569},
+  "exclude_contigs": ["chrM"],
+  "masks": {"chrY": [[0, 2458320], [62122809, 62460029]]},
+  "description": "Replace the existing chrY PAR-mask coordinates with N in the canonical full CHM13 v2.0 FASTA, extend the terminal mask to its canonical end, and omit chrM. Every retained contig keeps its canonical length and coordinates. This is an input-consistency correction, not an accuracy claim."
+}
