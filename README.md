@@ -45,6 +45,15 @@ Pass these through `--option_skype`. After native compression retains a new
 NClose, SKYPE reruns stages 10--23 once. VCF input defaults to rescue off.
 Full-assembly mode keeps its separate entry point.
 
+Native processed alignments have an `.aln.paf.alignasm.json` manifest with
+SHA256 identities for the alignasm executable, primary PAF, alternate PAF and
+result, plus the exact command. A change to these inputs reruns alignasm;
+unchanged inputs reuse the result. Existing results without this manifest are
+recomputed once. A failed run cannot publish a valid manifest. This check
+covers processing of existing PAFs: use top-level `--force` when changing the
+assembly FASTA or mapping reference so the upstream minimap2 PAFs are rebuilt.
+`--skype_force` restarts SKYPE stages and does not force upstream mappings.
+
 All reference-based minimap2 alignments share indexes under
 `<dependency_loc>/reference_indexes/`: read-depth mapping, assembly/gap mapping
 (including full-assembly and VCF insertion sequences), CEN-SAT preparation,

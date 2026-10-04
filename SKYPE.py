@@ -1,6 +1,7 @@
 import os
 import filecmp
 import importlib.util
+import hashlib
 import json
 import logging
 import pickle
@@ -491,7 +492,7 @@ def ensure_full_assembly_paf(
             alignasm_loc, raw_paf_path, "-t", thread_text,
             "--non_skip_linkable", "-a", f"{cache_prefix}.alt.paf",
         ],
-        "alignasm_binary": file_signature(alignasm_loc),
+        "alignasm_binary": content_signature(alignasm_loc),
     }
     if not force and full_assembly_cache_is_valid(
         paf_path,
@@ -875,6 +876,41 @@ def update_dependency(dep_folder):
 def is_nonempty_file(path):
     return os.path.isfile(path) and os.path.getsize(path) > 0
 
+def content_signature(path):
+    """Identify bytes, including replacements that preserve size and mtime."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return {"path": os.path.realpath(path), "sha256": digest.hexdigest()}
+
+
+def alignasm_cache_is_valid(manifest_path, inputs, output_path):
+    try:
+        with open(manifest_path, encoding="utf-8") as handle:
+            recorded = json.load(handle)
+        return (recorded.get("inputs") == inputs
+                and recorded.get("output") == content_signature(output_path))
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def save_alignasm_manifest(manifest_path, inputs, output_path):
+    manifest = {"inputs": inputs, "output": content_signature(output_path)}
+    fd, temporary = tempfile.mkstemp(
+        prefix=".alignasm.", suffix=".json.tmp",
+        dir=os.path.dirname(os.path.abspath(manifest_path)),
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(manifest, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        os.replace(temporary, manifest_path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 def run_alignasm(PREFIX_PATH, thread, fa_loc, ref_loc, ALIGNASM_LOC, force):
     # Run the alignasm tool for sequence alignment.
     THREAD = str(thread)
@@ -885,41 +921,57 @@ def run_alignasm(PREFIX_PATH, thread, fa_loc, ref_loc, ALIGNASM_LOC, force):
     pat_fa_file = f"{PREFIX_PATH}.pat.fa"
     alt_paf_file = f"{PREFIX_PATH}.alt.paf"
     tar_paf_tuple = (paf_file, f"{PREFIX_PATH}.aln.paf")
-    is_file = all(map(os.path.isfile, tar_paf_tuple))
+    rebuild_primary = force or not os.path.isfile(paf_file)
+    if rebuild_primary:
+        subprocess.run([
+            "minimap2", "--cs", "-t", THREAD, "-x", "asm20",
+            "--no-long-join", "-r2k", "-K10G",
+            ensure_reference_index(ref_loc, "asm20", dep_folder, thread),
+            fa_loc, "-o", paf_file
+        ], check=True)
 
-    if not is_file or force:
-        if force or not os.path.isfile(paf_file):
+    if rebuild_primary or not os.path.isfile(alt_paf_file):
+        if is_nonempty_file(paf_file):
             subprocess.run([
-                "minimap2", "--cs", "-t", THREAD, "-x", "asm20",
-                "--no-long-join", "-r2k", "-K10G",
-                ensure_reference_index(ref_loc, "asm20", dep_folder, thread),
-                fa_loc, "-o", paf_file
+                "python3", os.path.join(SCRIPT_DIR, "paf_gap_seq.py"),
+                fa_loc, paf_file, pat_fa_file
             ], check=True)
 
-        if force or not os.path.isfile(alt_paf_file):
-            if is_nonempty_file(paf_file):
-                subprocess.run([
-                    "python3", os.path.join(SCRIPT_DIR, "paf_gap_seq.py"),
-                    fa_loc, paf_file, pat_fa_file
-                ], check=True)
+            subprocess.run([
+                "minimap2", "--cs", "-t", THREAD, "-x", "asm20",
+                "-r2k", "-K10G",
+                ensure_reference_index(ref_loc, "asm20", dep_folder, thread),
+                pat_fa_file, "-o", alt_paf_file
+            ], check=True)
+        else:
+            open(pat_fa_file, "wt").close()
+            open(alt_paf_file, "wt").close()
 
-                subprocess.run([
-                    "minimap2", "--cs", "-t", THREAD, "-x", "asm20",
-                    "-r2k", "-K10G",
-                    ensure_reference_index(ref_loc, "asm20", dep_folder, thread),
-                    pat_fa_file, "-o", alt_paf_file
-                ], check=True)
-            else:
-                open(pat_fa_file, "wt").close()
-                open(alt_paf_file, "wt").close()
-
-        alignasm_cmd = [
-            ALIGNASM_LOC, paf_file,
-            "-t", THREAD, "--non_skip_linkable"
-        ]
-        if is_nonempty_file(alt_paf_file):
-            alignasm_cmd.extend(["-a", alt_paf_file])
+    alignasm_cmd = [
+        ALIGNASM_LOC, paf_file,
+        "-t", THREAD, "--non_skip_linkable"
+    ]
+    if is_nonempty_file(alt_paf_file):
+        alignasm_cmd.extend(["-a", alt_paf_file])
+    # This manifest covers the PAF -> alignasm stage. Raw minimap2 PAFs
+    # remain reusable inputs; --force still rebuilds the upstream mappings.
+    inputs = {
+        "schema": 1,
+        "binary": content_signature(ALIGNASM_LOC),
+        "primary_paf": content_signature(paf_file),
+        "alternate_paf": content_signature(alt_paf_file),
+        "command": alignasm_cmd,
+    }
+    manifest_path = tar_paf_tuple[1] + ".alignasm.json"
+    if force or not alignasm_cache_is_valid(manifest_path, inputs, tar_paf_tuple[1]):
+        # A failed subprocess may leave a partial output. Invalidate first and
+        # publish a new manifest only after successful output generation.
+        if os.path.exists(manifest_path):
+            os.unlink(manifest_path)
         subprocess.run(alignasm_cmd, check=True)
+        save_alignasm_manifest(manifest_path, inputs, tar_paf_tuple[1])
+    else:
+        logging.info("Reusing alignasm PAF with matching executable, inputs and command")
 
     return tar_paf_tuple
 
