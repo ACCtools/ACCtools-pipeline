@@ -54,15 +54,30 @@ covers processing of existing PAFs: use top-level `--force` when changing the
 assembly FASTA or mapping reference so the upstream minimap2 PAFs are rebuilt.
 `--skype_force` restarts SKYPE stages and does not force upstream mappings.
 
-All reference-based minimap2 alignments share indexes under
+Fresh primary and alternate assembly alignment generation also writes
+`<primary.paf>.source_binding.json`. It binds the assembly and reference
+content before and after generation, both PAF outputs, the commands, gap
+extraction code, and a content-bound minimap2 index. The index record connects
+its temporary build output to the atomically published index by SHA256.
+Cached raw PAFs without this provenance remain usable, but are not assigned a
+new source binding after the fact. A downstream sequence report must treat an
+absent or mismatched binding as unverified. An interrupted generation leaves
+a pending marker and is rebuilt from the primary alignment on retry.
+
+Reference-based minimap2 alignments store indexes under
 `<dependency_loc>/reference_indexes/`: read-depth mapping, assembly/gap mapping
 (including full-assembly and VCF insertion sequences), CEN-SAT preparation,
 and raw-read/OLC rescue. An index is built only when an alignment is needed.
-Cache keys include the resolved FASTA path, size and modification time,
+Fresh assembly/gap generation uses a separate `source-bound` index cache keyed
+by resolved reference path, full reference SHA256, and mapper path, SHA256 and
+version, with the asm20 preset. Existing size/mtime-only indexes are left
+intact; the first source-bound generation builds and verifies its own index.
+Other mapping stages use cache keys with FASTA path, size and modification time,
 minimap2 preset, and minimap2 version. Matching calls reuse the index;
 concurrent runs wait for the same build to finish. Index build logs and
 reference metadata are stored beside the `.mmi` file. SKYPE's
-`reference_indexes.py` supplies the common implementation. An explicit
+`reference_indexes.py` supplies that shared implementation; ACC's
+`alignment_provenance.py` supplies the content-bound assembly cache. An explicit
 `--reference-index` inside `--raw-rescue-options` still takes precedence.
 
 `--option_skype` (`--option-skype` also works) forwards a quoted option string

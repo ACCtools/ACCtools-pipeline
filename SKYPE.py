@@ -19,6 +19,11 @@ from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_provenance_spec = importlib.util.spec_from_file_location(
+    "acctools_alignment_provenance", os.path.join(SCRIPT_DIR, "alignment_provenance.py")
+)
+alignment_provenance = importlib.util.module_from_spec(_provenance_spec)
+_provenance_spec.loader.exec_module(alignment_provenance)
 MEM_SAFE_RATIO = 0.8
 
 REFERENCE_HS1 = "hs1"
@@ -921,31 +926,77 @@ def run_alignasm(PREFIX_PATH, thread, fa_loc, ref_loc, ALIGNASM_LOC, force):
     pat_fa_file = f"{PREFIX_PATH}.pat.fa"
     alt_paf_file = f"{PREFIX_PATH}.alt.paf"
     tar_paf_tuple = (paf_file, f"{PREFIX_PATH}.aln.paf")
-    rebuild_primary = force or not os.path.isfile(paf_file)
+    source_binding_path = paf_file + ".source_binding.json"
+    generation_marker = paf_file + ".source_binding.pending.json"
+    rebuild_primary = force or not os.path.isfile(paf_file) or os.path.isfile(generation_marker)
+    rebuild_alternate = rebuild_primary or not os.path.isfile(alt_paf_file)
+    source_before = None
+    index_binding = None
+    generation_commands = []
+    generated_outputs = {}
+    if rebuild_alternate:
+        # Never attach current source hashes retrospectively to cached raw PAFs.
+        # The marker also prevents a failed attempt from reusing mixed/partial
+        # primary and alternate files on its next invocation.
+        if os.path.exists(source_binding_path):
+            os.unlink(source_binding_path)
+        alignment_provenance.write_json_atomic(generation_marker, {
+            "schema": "SKYPE.assembly_alignment_generation_pending.v1",
+            "status": "generation_incomplete", "rebuild_primary": rebuild_primary,
+        })
+        source_before = alignment_provenance.source_inputs(fa_loc, ref_loc)
+        index_binding = alignment_provenance.ensure_bound_reference_index(
+            ref_loc, os.path.join(dep_folder, "reference_indexes"), thread,
+        )
+        if index_binding["reference"] != source_before["reference"]:
+            raise RuntimeError("Reference changed before assembly alignment generation")
+        mapper_path = index_binding["minimap2"]["path"]
+        reference_index = index_binding["index"]["path"]
+        gap_extractor = alignment_provenance.content_signature(
+            os.path.join(SCRIPT_DIR, "paf_gap_seq.py")
+        )
     if rebuild_primary:
-        subprocess.run([
-            "minimap2", "--cs", "-t", THREAD, "-x", "asm20",
+        command = [
+            mapper_path, "--cs", "-t", THREAD, "-x", "asm20",
             "--no-long-join", "-r2k", "-K10G",
-            ensure_reference_index(ref_loc, "asm20", dep_folder, thread),
+            reference_index,
             fa_loc, "-o", paf_file
-        ], check=True)
+        ]
+        generation_commands.append(command)
+        subprocess.run(command, check=True)
+        generated_outputs["primary_paf"] = alignment_provenance.content_signature(paf_file)
 
-    if rebuild_primary or not os.path.isfile(alt_paf_file):
+    if rebuild_alternate:
         if is_nonempty_file(paf_file):
-            subprocess.run([
-                "python3", os.path.join(SCRIPT_DIR, "paf_gap_seq.py"),
+            command = [
+                sys.executable, gap_extractor["path"],
                 fa_loc, paf_file, pat_fa_file
-            ], check=True)
-
-            subprocess.run([
-                "minimap2", "--cs", "-t", THREAD, "-x", "asm20",
+            ]
+            generation_commands.append(command)
+            subprocess.run(command, check=True)
+            gap_sequence = alignment_provenance.content_signature(pat_fa_file)
+            command = [
+                mapper_path, "--cs", "-t", THREAD, "-x", "asm20",
                 "-r2k", "-K10G",
-                ensure_reference_index(ref_loc, "asm20", dep_folder, thread),
+                reference_index,
                 pat_fa_file, "-o", alt_paf_file
-            ], check=True)
+            ]
+            generation_commands.append(command)
+            subprocess.run(command, check=True)
+            generated_outputs["alternate_paf"] = alignment_provenance.content_signature(alt_paf_file)
+            if gap_sequence != alignment_provenance.content_signature(pat_fa_file):
+                raise RuntimeError("Gap FASTA changed during alternate alignment generation")
         else:
             open(pat_fa_file, "wt").close()
             open(alt_paf_file, "wt").close()
+            generated_outputs["alternate_paf"] = alignment_provenance.content_signature(alt_paf_file)
+        if rebuild_primary:
+            alignment_provenance.publish_source_binding(
+                source_binding_path, source_before, fa_loc, ref_loc, paf_file,
+                alt_paf_file, generation_commands, index_binding, gap_extractor,
+                generated_outputs,
+            )
+        os.unlink(generation_marker)
 
     alignasm_cmd = [
         ALIGNASM_LOC, paf_file,
@@ -953,8 +1004,8 @@ def run_alignasm(PREFIX_PATH, thread, fa_loc, ref_loc, ALIGNASM_LOC, force):
     ]
     if is_nonempty_file(alt_paf_file):
         alignasm_cmd.extend(["-a", alt_paf_file])
-    # This manifest covers the PAF -> alignasm stage. Raw minimap2 PAFs
-    # remain reusable inputs; --force still rebuilds the upstream mappings.
+    # This manifest covers the PAF -> alignasm stage. Raw PAFs remain reusable
+    # inputs; their source binding is published only by fresh generation above.
     inputs = {
         "schema": 1,
         "binary": content_signature(ALIGNASM_LOC),
