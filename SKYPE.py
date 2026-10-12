@@ -497,12 +497,25 @@ def full_assembly_cache_is_valid(
     return True
 
 
+ALIGNASM_SCORING_MODES = ("quality", "coverage", "legacy")
+
+
+def alignasm_scoring_args(alignasm_scoring):
+    if alignasm_scoring not in ALIGNASM_SCORING_MODES:
+        raise ValueError(f"Unsupported alignasm scoring mode: {alignasm_scoring}")
+    # quality is the alignasm default; omit it so existing cache manifests stay valid.
+    if alignasm_scoring == "quality":
+        return []
+    return ["--scoring", alignasm_scoring]
+
+
 def ensure_full_assembly_paf(
     assembly_path,
     reference_bundle,
     thread,
     alignasm_loc,
     force=False,
+    alignasm_scoring="quality",
 ):
     assembly_path = os.path.abspath(assembly_path)
     require_file(assembly_path, "full assembly FASTA")
@@ -537,7 +550,8 @@ def ensure_full_assembly_paf(
         ],
         "alignasm": [
             alignasm_loc, raw_paf_path, "-t", thread_text,
-            "--non_skip_linkable", "-a", f"{cache_prefix}.alt.paf",
+            "--non_skip_linkable", *alignasm_scoring_args(alignasm_scoring),
+            "-a", f"{cache_prefix}.alt.paf",
         ],
         "alignasm_binary": content_signature(alignasm_loc),
     }
@@ -566,6 +580,7 @@ def ensure_full_assembly_paf(
             reference_path,
             alignasm_loc,
             True,
+            alignasm_scoring=alignasm_scoring,
         )
         validate_full_assembly_paf_content(
             candidate_path, assembly_lengths, reference_lengths
@@ -958,7 +973,7 @@ def save_alignasm_manifest(manifest_path, inputs, output_path):
             os.unlink(temporary)
 
 
-def run_alignasm(PREFIX_PATH, thread, fa_loc, ref_loc, ALIGNASM_LOC, force):
+def run_alignasm(PREFIX_PATH, thread, fa_loc, ref_loc, ALIGNASM_LOC, force, alignasm_scoring="quality"):
     # Run the alignasm tool for sequence alignment.
     THREAD = str(thread)
     # alignasm is installed at <dependency root>/alignasm/build/alignasm.
@@ -1042,7 +1057,8 @@ def run_alignasm(PREFIX_PATH, thread, fa_loc, ref_loc, ALIGNASM_LOC, force):
 
     alignasm_cmd = [
         ALIGNASM_LOC, paf_file,
-        "-t", THREAD, "--non_skip_linkable"
+        "-t", THREAD, "--non_skip_linkable",
+        *alignasm_scoring_args(alignasm_scoring),
     ]
     if is_nonempty_file(alt_paf_file):
         alignasm_cmd.extend(["-a", alt_paf_file])
@@ -1231,7 +1247,7 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
              is_progress, force, skype_force, run_skype_func, graph_depth,
              no_utg=False, skype_dir=None, option_skype="", skype_start_at=0,
              print_args=False, reference=REFERENCE_HS1, benchmark_vcf_loc=None,
-             full_assembly=None):
+             full_assembly=None, alignasm_scoring="quality"):
     # Main analysis function that orchestrates alignment and SKYPE execution.
     os.makedirs(PREFIX, exist_ok=True)
 
@@ -1263,6 +1279,7 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
             thread,
             os.path.join(dep_folder, "alignasm", "build", "alignasm"),
             force=force,
+            alignasm_scoring=alignasm_scoring,
         )
         if skype_start_at > 21 and paf_rebuilt:
             raise ValueError(
@@ -1306,24 +1323,24 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
 
     args_ctg = (
         alignasm_folder_ctg, alignasm_thread, contig_loc, alignasm_ref_loc,
-        alignasm_loc, force
+        alignasm_loc, force, alignasm_scoring
     )
     args_utg = (
         alignasm_folder_utg, alignasm_thread, unitig_loc, alignasm_ref_loc,
-        alignasm_loc, force
+        alignasm_loc, force, alignasm_scoring
     )
 
     if benchmark_vcf_loc:
         if no_utg:
             ctg_paf, ctg_aln_paf = run_alignasm(
                 alignasm_folder_ctg, thread, contig_loc, alignasm_ref_loc,
-                alignasm_loc, force
+                alignasm_loc, force, alignasm_scoring
             )
             utg_paf, utg_aln_paf = ctg_paf, ctg_aln_paf
         else:
             utg_paf, utg_aln_paf = run_alignasm(
                 alignasm_folder_utg, thread, unitig_loc, alignasm_ref_loc,
-                alignasm_loc, force
+                alignasm_loc, force, alignasm_scoring
             )
             ctg_paf, ctg_aln_paf = utg_paf, utg_aln_paf
 
@@ -1337,7 +1354,7 @@ def analysis(CELL_LINE, PREFIX, contig_loc, unitig_loc, depth_loc, thread, dep_f
             if vcf_ins_fasta_changed or not os.path.isfile(vcf_ins_aln_paf):
                 _, vcf_ins_aln_paf = run_alignasm(
                     alignasm_folder_vcf, thread, vcf_ins_fa, alignasm_ref_loc,
-                    alignasm_loc, force or vcf_ins_fasta_changed
+                    alignasm_loc, force or vcf_ins_fasta_changed, alignasm_scoring
                 )
 
         effective_skype_force = skype_force or vcf_ins_fasta_changed
@@ -1471,6 +1488,11 @@ def get_skype_parser():
             default=REFERENCE_HS1,
             help="Reference build for alignment/depth/SKYPE resources"
         )
+        subparser.add_argument(
+            "--alignasm_scoring", "--alignasm-scoring", choices=ALIGNASM_SCORING_MODES,
+            default="quality",
+            help="alignasm path scoring mode passed as --scoring (default: quality)"
+        )
         input_group = subparser.add_mutually_exclusive_group()
         input_group.add_argument(
             "--benchmark_vcf_loc", type=str,
@@ -1588,6 +1610,7 @@ def main():
             print_args=args.print_args, reference=args.reference,
             benchmark_vcf_loc=args.benchmark_vcf_loc,
             full_assembly=args.full_assembly,
+            alignasm_scoring=args.alignasm_scoring,
         )
     elif args.command == 'run_hifi':
         if not args.HIFI_FASTQ:
@@ -1609,6 +1632,7 @@ def main():
             run_skype, args.graph_depth, option_skype=args.option_skype,
             reference=args.reference, benchmark_vcf_loc=args.benchmark_vcf_loc,
             full_assembly=args.full_assembly,
+            alignasm_scoring=args.alignasm_scoring,
         )
     elif args.command == 'preprocess_flye':
         flye_preprocess(args.prefix, args.WORK_DIR, args.LONG_READ_FASTQ, args.thread, args.dependency_loc, args.preprocess_force, args.FLYE_TYPE, args.flye_args, args.minimap2_preset)
@@ -1632,6 +1656,7 @@ def main():
             run_skype, args.graph_depth, no_utg=True, option_skype=args.option_skype,
             reference=args.reference, benchmark_vcf_loc=args.benchmark_vcf_loc,
             full_assembly=args.full_assembly,
+            alignasm_scoring=args.alignasm_scoring,
         )
 
 
