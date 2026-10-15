@@ -140,6 +140,7 @@ The following options are recognized in the native route:
 | `--skip_bam_analysis` | Disabled | Skips raw-read BAM validation of translocation candidates and the removal of raw-read-supported virtual-inversion candidates. Do not combine it with `--check_nclose_count`, because the requested VAF filter cannot run when BAM analysis is skipped. |
 | `--vcf_filter_pass <FILTER> [FILTER ...]` | `PASS .` | In VCF input mode, replaces the accepted `FILTER` values. Matching is exact and case-sensitive; outside VCF mode this argument is ignored. |
 | `--verbose`, `--limit_combinations <PATH>` | Disabled / automatic | Stage 10 graph-search diagnostics or an exact limit pair. |
+| `--karyotype_mode` / `--variant_mode` | Karyotype | Selects whether stage 25 also writes the `_filter`/`_cluster` result sets. Karyotype mode is forced to variant mode for VCF input or more than 1000 NClose nodes. A restart keeps the previously requested mode unless one is given. |
 
 Inputs and execution controls are constructed by ACCtools and are rejected in
 `--option_skype` in native mode:
@@ -155,7 +156,7 @@ Inputs and execution controls are constructed by ACCtools and are rejected in
 For `run_hifi`, place `--option_skype` before `<Working directory>` because every
 argument after the working directory is interpreted as an input read file.
 
-Native restart stages are `0, 1, 10, 11, 21, 22, 23, 24, 31`. A nonzero restart
+Native restart stages are `0, 1, 10, 11, 21, 22, 23, 24, 25, 30, 31`. A nonzero restart
 validates the artifacts required from the skipped stages before launching
 subprocesses. A stage-10 restart reuses saved options; an explicit nonempty
 `--option_skype` replaces its graph options for that invocation. Preprocessing
@@ -176,9 +177,11 @@ bash run.sh --option_skype="--skip_bam_analysis --add_indel_graph" HCC1937
 The default native workflow discovers rearrangements from assembly alignments,
 constructs one observed-depth matrix, and fits every candidate column with one
 raw NNLS solve. It produces `SV_call_result.vcf`, `SKYPE_result.bed`,
-`nclose_report.tsv`, and `total_cov.*`. There are no karyotype/variant mode
-flags, normal-chromosome prior, post-NNLS filtering, or `_filter`/`_cluster`
-result sets.
+`nclose_report.tsv`, `total_cov.*`, `virtual_sky.*`, and `karyotype.txt`.
+Karyotype mode (the default) also refits the matrix after greedy NClose
+filtering and karyotype clustering (stage 25) and writes `_filter` and
+`_cluster` versions of the Virtual SKY, karyotype, Circos, VCF, and BED
+results. Variant mode and VCF input mode write only the unsuffixed results.
 
 ### VCF input mode
 

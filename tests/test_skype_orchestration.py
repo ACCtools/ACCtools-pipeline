@@ -71,16 +71,38 @@ class NativeSkypeOrchestrationTests(unittest.TestCase):
         self.assertEqual(Path(run.call_args.args[0][1]).name, "pipeline.py")
         return output.getvalue()
 
-    def test_native_commands_skip_removed_stages(self):
+    def test_native_commands_include_karyotype_output_stages(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = self.run_printed_pipeline(Path(temporary))
         self.assertIn("01_Preprocess_NClose.py", output)
         self.assertIn("10_Graph_Find_Paths.py", output)
         self.assertNotIn("02_Build_Breakend_Graph_Limited.py", output)
-        self.assertIn("23_run_nnls.py", output)
-        self.assertIn("31_depth_analysis.py", output)
         self.assertNotIn("24_cluster_weight.py", output)
-        self.assertNotIn("30_virtual_sky.py", output)
+        positions = [
+            output.index(script) for script in (
+                "23_run_nnls.py", "25_cluster_weight.py",
+                "30_virtual_sky.py", "31_depth_analysis.py",
+            )
+        ]
+        self.assertEqual(positions, sorted(positions))
+        stage25 = next(
+            line for line in output.splitlines() if "25_cluster_weight.py" in line
+        )
+        self.assertTrue(stage25.endswith("--mode karyotype"))
+
+    def test_variant_mode_option_selects_unsuffixed_outputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = self.run_printed_pipeline(
+                Path(temporary), option_skype="--variant_mode"
+            )
+        stage25 = next(
+            line for line in output.splitlines() if "25_cluster_weight.py" in line
+        )
+        self.assertTrue(stage25.endswith("--mode variant"))
+        stage01 = next(
+            line for line in output.splitlines() if "01_Preprocess_NClose.py" in line
+        )
+        self.assertNotIn("variant", stage01)
 
     def test_vcf_input_uses_the_same_single_nnls_route(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -95,11 +117,13 @@ class NativeSkypeOrchestrationTests(unittest.TestCase):
         self.assertNotIn("02_Build_Breakend_Graph_Limited.py", output)
         self.assertEqual(output.count("23_run_nnls.py"), 1)
         self.assertNotIn("24_cluster_weight.py", output)
-        self.assertNotIn("30_virtual_sky.py", output)
+        # Stage 25 records the forced variant mode; no _filter/_cluster fit runs.
+        self.assertIn("25_cluster_weight.py", output)
+        self.assertIn("30_virtual_sky.py", output)
 
-    def test_removed_native_stage_restarts_are_rejected(self):
+    def test_unknown_native_stage_restarts_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
-            for stage in (2, 30):
+            for stage in (2, 26):
                 with self.subTest(stage=stage):
                     with self.assertRaises(subprocess.CalledProcessError) as failure:
                         self.run_printed_pipeline(
@@ -122,6 +146,8 @@ class NativeSkypeOrchestrationTests(unittest.TestCase):
                 22: "22_save_matrix.py",
                 23: "23_run_nnls.py",
                 24: "24_raw_nclose_rescue.py",
+                25: "25_cluster_weight.py",
+                30: "30_virtual_sky.py",
                 31: "31_depth_analysis.py",
             }
             for start in stages:
@@ -183,13 +209,15 @@ class NativeSkypeOrchestrationTests(unittest.TestCase):
         self.assertIn("--reference", preparation)
         self.assertNotIn("--force", preparation)
 
-    def test_native_completion_uses_variant_outputs(self):
+    def test_native_completion_uses_unsuffixed_outputs(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             result = root / "result"
             result.mkdir()
             for filename in (
                 "total_cov.png",
+                "virtual_sky.png",
+                "karyotype.txt",
                 "nclose_report.tsv",
                 "SV_call_result.vcf",
                 "SKYPE_result.bed",
@@ -208,6 +236,8 @@ class NativeSkypeOrchestrationTests(unittest.TestCase):
             result.mkdir()
             for filename in (
                 "total_cov.png",
+                "virtual_sky.png",
+                "karyotype.txt",
                 "nclose_report.tsv",
                 "SV_benchmark_result.vcf",
             ):
